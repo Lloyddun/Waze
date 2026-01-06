@@ -3,15 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>WAZE | Le Mapane Premium 241</title>
+    <title>WAZE AFRICA | Connectez l'Afrique</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;900&display=swap" rel="stylesheet">
     
-    <!-- Firebase SDK -->
+    <!-- Firebase SDK (Version Compat pour stabilité) -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 
     <script>
+        // Configuration Firebase
         const firebaseConfig = {
             apiKey: "AIzaSyAlOqC65tOuOnjmpnuMVH-ES2HaSOPVGT4",
             authDomain: "waze-5644b.firebaseapp.com",
@@ -27,9 +28,7 @@
 
         // WebRTC Config
         const servers = {
-            iceServers: [
-                { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
-            ],
+            iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }],
             iceCandidatePoolSize: 10,
         };
 
@@ -42,16 +41,31 @@
         let statusObserver = null;
         let chatObserver = null;
 
+        const countries = [
+            "Afrique du Sud", "Algérie", "Angola", "Bénin", "Botswana", "Burkina Faso", "Burundi", "Cameroun", "Cap-Vert", "Comores", "Congo-Brazzaville", "Congo-Kinshasa", "Côte d'Ivoire", "Djibouti", "Égypte", "Érythrée", "Eswatini", "Éthiopie", "Gabon", "Gambie", "Ghana", "Guinée", "Guinée-Bissau", "Guinée équatoriale", "Kenya", "Lesotho", "Liberia", "Libye", "Madagascar", "Malawi", "Mali", "Maroc", "Maurice", "Mauritanie", "Mozambique", "Namibie", "Niger", "Nigeria", "Ouganda", "Rwanda", "Sao Tomé-et-Principe", "Sénégal", "Seychelles", "Sierra Leone", "Somalie", "Soudan", "Soudan du Sud", "Tanzanie", "Tchad", "Togo", "Tunisie", "Zambie", "Zimbabwe"
+        ];
+
+        window.onload = () => {
+            const select = document.getElementById('signup-country');
+            if(select) {
+                countries.forEach(c => {
+                    let opt = document.createElement('option');
+                    opt.value = c;
+                    opt.textContent = c;
+                    select.appendChild(opt);
+                });
+            }
+        };
+
         // --- AUTHENTIFICATION ---
         window.handleSignUp = async function() {
             const email = document.getElementById('signup-email').value.trim();
             const pass = document.getElementById('signup-pass').value.trim();
             const name = document.getElementById('signup-name').value.trim();
-            const gender = document.getElementById('signup-gender').value;
-            const province = document.getElementById('signup-province').value;
+            const country = document.getElementById('signup-country').value;
 
-            if (!email || !pass || !name || !gender || !province) {
-                showStatusMessage("Remplis tout le formulaire !");
+            if (!email || !pass || !name || !country) {
+                showStatusMessage("Veuillez remplir tous les champs !");
                 return;
             }
 
@@ -60,8 +74,7 @@
                 await db.collection("users").doc(userCredential.user.uid).set({
                     uid: userCredential.user.uid,
                     name: name,
-                    gender: gender,
-                    province: province,
+                    country: country,
                     isOnline: true,
                     currentMode: 'none',
                     isOccupied: false,
@@ -76,7 +89,7 @@
             const pass = document.getElementById('login-pass').value.trim();
             try {
                 await auth.signInWithEmailAndPassword(email, pass);
-            } catch (error) { showStatusMessage("Identifiants invalides"); }
+            } catch (error) { showStatusMessage("Identifiants incorrects"); }
         };
 
         // --- NAVIGATION ---
@@ -88,11 +101,8 @@
         window.startChatMode = async function(mode) {
             currentMode = mode;
             showView('main-app');
-            
             await db.collection("users").doc(auth.currentUser.uid).update({
-                currentMode: mode,
-                isOccupied: false,
-                isOnline: true,
+                currentMode: mode, isOccupied: false, isOnline: true,
                 lastSeen: firebase.firestore.FieldValue.serverTimestamp()
             });
 
@@ -106,17 +116,15 @@
                 stopCamera();
             }
             startStatusListener();
-        }
+        };
 
-        // --- ÉCOUTEUR DE STATUT & MESSAGES ---
         function startStatusListener() {
             if(statusObserver) statusObserver();
             statusObserver = db.collection("users").doc(auth.currentUser.uid).onSnapshot(doc => {
                 const data = doc.data();
                 if(!data) return;
-
                 if(currentPartnerId && !data.partnerId) {
-                    showStatusMessage("L'utilisateur vous a swappé 🔄");
+                    showStatusMessage("Partenaire déconnecté 🔄");
                     resetPartnerUI();
                 }
                 if(!currentPartnerId && data.partnerId) {
@@ -130,75 +138,57 @@
             const pDoc = await db.collection("users").doc(pId).get();
             const pData = pDoc.data();
             
-            document.getElementById('current-partner-name').innerText = pData.name;
-            document.getElementById('current-partner-loc').innerText = pData.province;
-            showStatusMessage(`Connecté à ${pData.name} (${pData.province}) ✅`);
+            document.getElementById('partner-info-text').innerText = `${pData.name} (${pData.country})`;
+            showStatusMessage(`Connecté avec ${pData.name} ✅`);
             
             if(currentMode === 'text') {
                 document.getElementById('chat-messages').innerHTML = "";
                 startChatListener();
             } else {
-                document.getElementById('remoteVideo').style.opacity = "1";
-                setupVideoCall(pId);
+                setupWebRTC();
             }
         }
 
-        // --- LOGIQUE VIDÉO WEBRTC ---
-        async function setupVideoCall(partnerId) {
-            const callId = [auth.currentUser.uid, partnerId].sort().join('_');
+        async function setupWebRTC() {
+            const callId = [auth.currentUser.uid, currentPartnerId].sort().join('_');
             const callDoc = db.collection('calls').doc(callId);
-            const offerCandidates = callDoc.collection('offerCandidates');
-            const answerCandidates = callDoc.collection('answerCandidates');
-
+            
             pc.onicecandidate = (event) => {
-                event.candidate && (auth.currentUser.uid < partnerId ? offerCandidates : answerCandidates).add(event.candidate.toJSON());
+                if (event.candidate) {
+                    const candCol = auth.currentUser.uid < currentPartnerId ? 'offerCandidates' : 'answerCandidates';
+                    callDoc.collection(candCol).add(event.candidate.toJSON());
+                }
             };
 
-            const remoteStream = new MediaStream();
+            remoteStream = new MediaStream();
             pc.ontrack = (event) => {
                 event.streams[0].getTracks().forEach((track) => remoteStream.addTrack(track));
+                document.getElementById('remoteVideo').style.opacity = "1";
             };
             document.getElementById('remoteVideo').srcObject = remoteStream;
 
             localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
-            const callData = (await callDoc.get()).data();
-
-            if (auth.currentUser.uid < partnerId) {
-                // Je suis l'offrant
+            if (auth.currentUser.uid < currentPartnerId) {
                 const offerDescription = await pc.createOffer();
                 await pc.setLocalDescription(offerDescription);
                 await callDoc.set({ offer: { sdp: offerDescription.sdp, type: offerDescription.type } });
-
-                callDoc.onSnapshot((snapshot) => {
-                    const data = snapshot.data();
-                    if (!pc.currentRemoteDescription && data?.answer) {
-                        pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-                    }
+                callDoc.onSnapshot((snap) => {
+                    const d = snap.data();
+                    if (!pc.currentRemoteDescription && d?.answer) pc.setRemoteDescription(new RTCSessionDescription(d.answer));
                 });
-
-                answerCandidates.onSnapshot((snapshot) => {
-                    snapshot.docChanges().forEach((change) => {
-                        if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-                    });
-                });
+                callDoc.collection('answerCandidates').onSnapshot(s => s.docChanges().forEach(c => c.type === 'added' && pc.addIceCandidate(new RTCIceCandidate(c.doc.data()))));
             } else {
-                // Je suis le répondant
-                callDoc.onSnapshot(async (snapshot) => {
-                    const data = snapshot.data();
-                    if (!pc.currentRemoteDescription && data?.offer) {
-                        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-                        const answerDescription = await pc.createAnswer();
-                        await pc.setLocalDescription(answerDescription);
-                        await callDoc.update({ answer: { sdp: answerDescription.sdp, type: answerDescription.type } });
+                callDoc.onSnapshot(async (snap) => {
+                    const d = snap.data();
+                    if (!pc.currentRemoteDescription && d?.offer) {
+                        await pc.setRemoteDescription(new RTCSessionDescription(d.offer));
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+                        await callDoc.update({ answer: { sdp: answer.sdp, type: answer.type } });
                     }
                 });
-
-                offerCandidates.onSnapshot((snapshot) => {
-                    snapshot.docChanges().forEach((change) => {
-                        if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-                    });
-                });
+                callDoc.collection('offerCandidates').onSnapshot(s => s.docChanges().forEach(c => c.type === 'added' && pc.addIceCandidate(new RTCIceCandidate(c.doc.data()))));
             }
         }
 
@@ -213,36 +203,42 @@
                     snapshot.forEach(doc => {
                         const m = doc.data();
                         const isMine = m.senderId === auth.currentUser.uid;
-                        appendMessageUI(isMine ? "Moi" : "L'autre", m.text, isMine);
+                        appendMessageUI(isMine ? "Moi" : "Partenaire", m.text, isMine);
                     });
                 });
         }
 
         function resetPartnerUI() {
             if(chatObserver) chatObserver();
-            if(pc) {
-                pc.close();
-                pc = new RTCPeerConnection(servers);
-            }
             currentPartnerId = null;
-            document.getElementById('current-partner-name').innerText = "En attente...";
-            document.getElementById('current-partner-loc').innerText = "GABON";
+            document.getElementById('partner-info-text').innerText = "Recherche en cours...";
             document.getElementById('chat-messages').innerHTML = "";
-            document.getElementById('remoteVideo').style.opacity = "0.3";
+            document.getElementById('remoteVideo').style.opacity = "0.2";
             document.getElementById('remoteVideo').srcObject = null;
+            pc.close();
+            pc = new RTCPeerConnection(servers);
         }
 
-        // --- MATCHING ---
+        // --- MATCHING ET SUPPRESSION AUTO ---
         window.nextMapane = async function() {
             const overlay = document.getElementById('matching-overlay');
             overlay.style.display = 'flex';
 
             const myId = auth.currentUser.uid;
+            
+            // Suppression des messages avant de swap
             if(currentPartnerId) {
+                const chatId = [myId, currentPartnerId].sort().join('_');
+                const msgs = await db.collection("chats").doc(chatId).collection("messages").get();
+                const batch = db.batch();
+                msgs.forEach(doc => batch.delete(doc.ref));
+                await batch.commit();
+
                 await db.collection("users").doc(currentPartnerId).update({ partnerId: null, isOccupied: false });
                 const callId = [myId, currentPartnerId].sort().join('_');
-                await db.collection('calls').doc(callId).delete();
+                await db.collection('calls').doc(callId).delete().catch(()=>{});
             }
+
             await db.collection("users").doc(myId).update({ partnerId: null, isOccupied: false });
             resetPartnerUI();
 
@@ -251,7 +247,7 @@
                     .where("isOnline", "==", true)
                     .where("isOccupied", "==", false)
                     .where("currentMode", "==", currentMode)
-                    .limit(10)
+                    .limit(5)
                     .get();
 
                 let potential = [];
@@ -261,17 +257,16 @@
                     const partner = potential[Math.floor(Math.random() * potential.length)];
                     await db.collection("users").doc(myId).update({ partnerId: partner.uid, isOccupied: true });
                     await db.collection("users").doc(partner.uid).update({ partnerId: myId, isOccupied: true });
-                    setTimeout(() => { overlay.style.display = 'none'; }, 600);
+                    setTimeout(() => { overlay.style.display = 'none'; }, 800);
                 } else {
                     setTimeout(() => {
                         overlay.style.display = 'none';
-                        showStatusMessage("Personne n'est libre... Réessaye.");
-                    }, 1200);
+                        showStatusMessage("Aucun utilisateur libre en Afrique...");
+                    }, 1500);
                 }
             } catch (e) { overlay.style.display = 'none'; }
         };
 
-        // --- MESSAGERIE ---
         window.sendMessage = async function() {
             const input = document.getElementById('chat-input');
             const text = input.value.trim();
@@ -279,8 +274,7 @@
                 const chatId = [auth.currentUser.uid, currentPartnerId].sort().join('_');
                 input.value = "";
                 await db.collection("chats").doc(chatId).collection("messages").add({
-                    text: text,
-                    senderId: auth.currentUser.uid,
+                    text: text, senderId: auth.currentUser.uid,
                     timestamp: firebase.firestore.FieldValue.serverTimestamp()
                 });
             }
@@ -295,26 +289,22 @@
             box.scrollTop = box.scrollHeight;
         }
 
-        // --- MEDIA ---
         async function initCamera() {
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 document.getElementById('localVideo').srcObject = localStream;
-            } catch (e) { showStatusMessage("Erreur Caméra"); }
+            } catch (e) { showStatusMessage("Accès caméra requis !"); }
         }
 
         function stopCamera() {
-            if (localStream) {
-                localStream.getTracks().forEach(t => t.stop());
-                localStream = null;
-            }
+            if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
         }
 
         window.toggleMute = function() {
             if(localStream) {
                 isMuted = !isMuted;
                 localStream.getAudioTracks()[0].enabled = !isMuted;
-                document.getElementById('mute-btn').style.color = isMuted ? "#ff4444" : "#fff";
+                document.getElementById('mute-btn').style.background = isMuted ? "#ef4444" : "rgba(255,255,255,0.1)";
             }
         };
 
@@ -329,9 +319,7 @@
         };
 
         window.realLogout = async function() {
-            if(auth.currentUser) {
-                await db.collection("users").doc(auth.currentUser.uid).update({ isOnline: false, isOccupied: false });
-            }
+            if(auth.currentUser) await db.collection("users").doc(auth.currentUser.uid).update({ isOnline: false, isOccupied: false });
             auth.signOut().then(() => location.reload());
         };
 
@@ -352,196 +340,167 @@
         :root { 
             --primary: #fbc02d; 
             --primary-glow: rgba(251, 192, 45, 0.4);
-            --bg: #050505; 
-            --card: #121212; 
-            --border: rgba(255, 255, 255, 0.08); 
-            --text: #ffffff; 
+            --bg: #0d0d11; 
+            --card: #18181f; 
+            --border: rgba(255, 255, 255, 0.05); 
+            --text: #f8f8f8; 
+            --accent: #2c2c36;
         }
 
-        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; outline: none; }
-        body, html { margin: 0; font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; font-family: 'Outfit', sans-serif; }
+        body, html { margin: 0; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
 
-        .screen-container { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; background: var(--bg); z-index: 100; animation: fadeIn 0.4s ease; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .screen-container { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 100; animation: fadeIn 0.5s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
 
         .auth-card { 
-            background: var(--card); padding: 40px 30px; border-radius: 40px; 
-            width: 90%; max-width: 400px; text-align: center; 
-            border: 1px solid var(--border); box-shadow: 0 30px 60px rgba(0,0,0,0.5);
+            background: var(--card); padding: 45px 35px; border-radius: 40px; 
+            width: 90%; max-width: 420px; text-align: center; 
+            border: 1px solid var(--border); box-shadow: 0 40px 80px rgba(0,0,0,0.6);
         }
 
-        .logo-main { font-size: 5rem; font-weight: 900; color: var(--primary); margin: 0; letter-spacing: -4px; text-shadow: 0 0 30px var(--primary-glow); }
+        .logo-main { font-size: 4.5rem; font-weight: 900; color: var(--primary); margin: 0; letter-spacing: -4px; text-shadow: 0 10px 30px var(--primary-glow); }
         
         .btn { 
-            width: 100%; padding: 20px; border-radius: 22px; border: none; 
+            width: 100%; padding: 22px; border-radius: 24px; border: none; 
             font-weight: 900; cursor: pointer; transition: 0.3s; 
-            margin-bottom: 12px; display: flex; align-items: center; justify-content: center; gap: 12px;
-            text-transform: uppercase; letter-spacing: 1px;
+            margin-bottom: 15px; display: flex; align-items: center; justify-content: center; gap: 12px;
+            text-transform: uppercase; letter-spacing: 1.5px;
         }
-        .btn:active { transform: scale(0.96); }
-        .btn-primary { background: var(--primary); color: #000; box-shadow: 0 10px 25px var(--primary-glow); }
-        .btn-outline { background: rgba(255,255,255,0.03); color: #fff; border: 1px solid var(--border); }
+        .btn:active { transform: scale(0.97); }
+        .btn-primary { background: var(--primary); color: #000; box-shadow: 0 15px 35px var(--primary-glow); }
+        .btn-outline { background: rgba(255,255,255,0.03); color: #fff; border: 1px solid var(--border); backdrop-filter: blur(10px); }
         
         input, select { 
-            width: 100%; background: #181818; border: 1px solid var(--border); 
-            padding: 18px; border-radius: 18px; color: #fff; margin-bottom: 15px; 
+            width: 100%; background: #22222b; border: 1px solid var(--border); 
+            padding: 20px; border-radius: 20px; color: #fff; margin-bottom: 18px; 
             font-size: 1rem; transition: 0.3s;
         }
+        input:focus { border-color: var(--primary); outline: none; }
 
         header { 
-            width: 100%; padding: 20px; display: flex; justify-content: space-between; 
-            align-items: center; z-index: 110; background: linear-gradient(to bottom, #000, transparent);
+            width: 100%; padding: 25px 30px; display: flex; justify-content: space-between; 
+            align-items: center; z-index: 110; position: absolute; top:0; background: linear-gradient(to bottom, #000, transparent);
         }
 
         .app-body { flex: 1; width: 100%; position: relative; overflow: hidden; }
 
         #video-layout { position: absolute; inset: 0; background: #000; }
-        .remote-v { width: 100%; height: 100%; object-fit: cover; opacity: 0.3; transition: 0.5s; background: #000; }
+        .remote-v { width: 100%; height: 100%; object-fit: cover; opacity: 0.2; transition: 0.8s ease; }
         .local-v { 
-            position: absolute; bottom: 100px; right: 20px; 
-            width: 130px; height: 180px; border-radius: 24px; 
-            border: 3px solid var(--primary); object-fit: cover; 
-            z-index: 20; box-shadow: 0 15px 40px rgba(0,0,0,0.8);
-            background: #111;
+            position: absolute; bottom: 120px; right: 25px; 
+            width: 140px; height: 190px; border-radius: 30px; 
+            border: 2px solid var(--primary); object-fit: cover; 
+            z-index: 20; box-shadow: 0 20px 50px rgba(0,0,0,0.8); background: #111;
         }
         
         .partner-chip { 
-            position: absolute; top: 20px; left: 20px; 
-            background: rgba(0,0,0,0.4); backdrop-filter: blur(20px); 
-            padding: 15px 25px; border-radius: 24px; z-index: 20; 
+            position: absolute; top: 100px; left: 25px; 
+            background: rgba(0,0,0,0.6); backdrop-filter: blur(25px); 
+            padding: 18px 25px; border-radius: 25px; z-index: 20; 
             border: 1px solid rgba(255,255,255,0.1);
         }
 
-        #video-controls { 
-            position: absolute; bottom: 100px; left: 20px; 
-            display: flex; flex-direction: column; gap: 15px; z-index: 30; 
-        }
-        .ctrl-btn { 
-            width: 55px; height: 55px; border-radius: 20px; 
-            background: rgba(0,0,0,0.5); backdrop-filter: blur(10px);
-            color: white; border: 1px solid var(--border); cursor: pointer; 
-            display: flex; align-items: center; justify-content: center;
-        }
+        #video-controls { position: absolute; bottom: 120px; left: 25px; display: flex; flex-direction: column; gap: 15px; z-index: 30; }
+        .ctrl-btn { width: 60px; height: 60px; border-radius: 22px; background: rgba(255,255,255,0.05); color: white; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; cursor: pointer; }
 
-        #chat-area { display: none; flex-direction: column; height: 100%; padding: 20px; background: #080808; }
-        #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-bottom: 20px; }
-        .message-bubble { padding: 16px 20px; border-radius: 24px; max-width: 85%; font-size: 1.05rem; }
-        .message-bubble.mine { background: var(--primary); color: #000; align-self: flex-end; border-bottom-right-radius: 4px; font-weight: 600; }
-        .message-bubble.other { background: #1c1c1c; align-self: flex-start; border-bottom-left-radius: 4px; border: 1px solid var(--border); }
-        .sender { font-size: 0.7rem; font-weight: 800; opacity: 0.5; text-transform: uppercase; margin-bottom: 4px; display: block; }
+        #chat-area { display: none; flex-direction: column; height: 100%; padding: 110px 25px 120px; background: var(--bg); }
+        #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; padding-bottom: 20px; }
+        .message-bubble { padding: 18px 24px; border-radius: 28px; max-width: 80%; line-height: 1.5; }
+        .message-bubble.mine { background: var(--primary); color: #000; align-self: flex-end; border-bottom-right-radius: 5px; font-weight: 600; }
+        .message-bubble.other { background: var(--accent); align-self: flex-start; border-bottom-left-radius: 5px; border: 1px solid var(--border); }
+        .sender { font-size: 0.75rem; font-weight: 900; opacity: 0.5; text-transform: uppercase; margin-bottom: 5px; display: block; }
 
-        #matching-overlay { 
-            position: absolute; inset: 0; background: rgba(0,0,0,0.95); 
-            display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 200; 
-        }
-        .spinner { 
-            width: 70px; height: 70px; border: 6px solid rgba(251,192,45,0.1); 
-            border-top: 6px solid var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; 
-        }
+        #matching-overlay { position: absolute; inset: 0; background: rgba(10,10,14,0.98); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 200; }
+        .spinner { width: 80px; height: 80px; border: 4px solid rgba(251,192,45,0.05); border-top: 4px solid var(--primary); border-radius: 50%; animation: spin 1s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
 
-        #snackbar { 
-            position: fixed; top: -100px; left: 50%; transform: translateX(-50%); 
-            background: var(--primary); color: #000; padding: 18px 35px; border-radius: 50px; 
-            font-weight: 900; transition: 0.6s cubic-bezier(0.18, 0.89, 0.32, 1.28); z-index: 1000; 
-            box-shadow: 0 15px 40px var(--primary-glow);
-        }
+        #snackbar { position: fixed; top: -100px; left: 50%; transform: translateX(-50%); background: #fff; color: #000; padding: 20px 40px; border-radius: 50px; font-weight: 800; transition: 0.5s; z-index: 1000; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
         #snackbar.show { top: 30px; }
 
-        footer { 
-            width: 100%; padding: 20px 20px calc(25px + env(safe-area-inset-bottom)); 
-            z-index: 110; background: linear-gradient(to top, #000, transparent);
-        }
+        footer { position: absolute; bottom: 0; width: 100%; padding: 20px 25px calc(25px + env(safe-area-inset-bottom)); z-index: 110; background: linear-gradient(to top, var(--bg), transparent); }
     </style>
 </head>
 <body>
 
     <div id="snackbar"></div>
 
-    <!-- AUTH -->
+    <!-- AUTH SCREEN -->
     <div id="auth-screen" class="screen-container">
         <div class="auth-card" id="login-form">
             <h1 class="logo-main">WAZE</h1>
-            <p style="color:#666; font-size: 1.1rem; margin-bottom: 40px;">Entrez dans le Mapane Premium 🇬🇦</p>
+            <p style="color:#777; margin-bottom: 40px; font-weight: 600;">L'Afrique connectée sans frontières 🌍</p>
             <input type="email" id="login-email" placeholder="Email">
             <input type="password" id="login-pass" placeholder="Mot de passe">
-            <button class="btn btn-primary" onclick="handleLogin()">CONNEXION</button>
-            <p onclick="document.getElementById('login-form').style.display='none'; document.getElementById('signup-form').style.display='block';" style="cursor:pointer; color:var(--primary); font-weight:800; margin-top:20px;">CRÉER UN COMPTE</p>
+            <button class="btn btn-primary" onclick="handleLogin()">SE CONNECTER</button>
+            <p onclick="document.getElementById('login-form').style.display='none'; document.getElementById('signup-form').style.display='block';" style="cursor:pointer; color:var(--primary); font-weight:800; margin-top:25px;">REJOINDRE LE RÉSEAU</p>
         </div>
         
         <div class="auth-card" id="signup-form" style="display:none;">
-            <h2 style="margin:0 0 25px 0; font-weight:900;">INSCRIPTION</h2>
-            <input type="text" id="signup-name" placeholder="Pseudo">
-            <div style="display:flex; gap:12px;">
-                <select id="signup-gender"><option value="M">H</option><option value="F">F</option></select>
-                <select id="signup-province" style="flex:2;">
-                    <option value="Estuaire">Estuaire</option>
-                    <option value="Haut-Ogooué">Haut-Ogooué</option>
-                    <option value="Ogooué-Maritime">Og-Maritime</option>
-                </select>
-            </div>
+            <h2 style="margin:0 0 30px 0; font-weight:900; letter-spacing:-1px;">INSCRIPTION PANAFRICAINE</h2>
+            <input type="text" id="signup-name" placeholder="Votre Pseudo">
+            <select id="signup-country"></select>
             <input type="email" id="signup-email" placeholder="Email">
             <input type="password" id="signup-pass" placeholder="Mot de passe">
-            <button class="btn btn-primary" onclick="handleSignUp()">S'INSCRIRE</button>
+            <button class="btn btn-primary" onclick="handleSignUp()">CRÉER MON COMPTE</button>
             <p onclick="document.getElementById('signup-form').style.display='none'; document.getElementById('login-form').style.display='block';" style="cursor:pointer; color:var(--primary); font-weight:800;">DÉJÀ INSCRIT ?</p>
         </div>
     </div>
 
-    <!-- SELECTION -->
+    <!-- SELECTION SCREEN -->
     <div id="selection-screen" class="screen-container">
-        <div class="auth-card">
-            <h2 style="font-weight:900; margin:0 0 30px 0;">CHOISIS TON AMBIANCE</h2>
-            <button class="btn btn-primary" onclick="startChatMode('video')" style="height:90px; font-size:1.2rem;">
-                VIDÉO CHAT DIRECT 🎥
+        <div class="auth-card" style="background:transparent; border:none; box-shadow:none;">
+            <h1 class="logo-main" style="margin-bottom:40px;">WAZE</h1>
+            <button class="btn btn-primary" onclick="startChatMode('video')" style="height:110px; font-size:1.3rem; border-radius:35px;">
+                Vidéo Instantanée 🎥
             </button>
-            <button class="btn btn-outline" onclick="startChatMode('text')" style="height:90px; font-size:1.2rem;">
-                MESSAGE TEXTE 💬
+            <button class="btn btn-outline" onclick="startChatMode('text')" style="height:110px; font-size:1.3rem; border-radius:35px;">
+                Discussion Texte 💬
             </button>
-            <button class="btn" onclick="realLogout()" style="color:#ff4444; margin-top:20px;">DÉCONNEXION</button>
+            <button class="btn" onclick="realLogout()" style="color:#ef4444; margin-top:30px; background:none; font-weight:800;">DÉCONNEXION</button>
         </div>
     </div>
 
-    <!-- APP -->
+    <!-- APP SCREEN -->
     <div id="main-app" class="screen-container" style="padding:0;">
         <header>
-            <div style="font-weight:900; font-size:1.8rem; letter-spacing:-2px;">WAZE<span style="color:var(--primary);">.GA</span></div>
-            <button onclick="goToMenu()" class="btn-outline" style="padding:10px 20px; width:auto; font-weight:800; border-radius:15px;">QUITTER</button>
+            <div style="font-weight:900; font-size:1.7rem; letter-spacing:-1.5px;">WAZE <span style="color:var(--primary);">AFRICA</span></div>
+            <button onclick="goToMenu()" class="btn-outline" style="padding:12px 25px; width:auto; font-weight:800; border-radius:18px; font-size:0.9rem;">QUITTER</button>
         </header>
 
         <div class="app-body">
             <div id="matching-overlay">
                 <div class="spinner"></div>
-                <p style="color:var(--primary); font-weight:900; margin-top:25px; letter-spacing:2px;">ON CHERCHE UN GABONAIS...</p>
+                <p style="color:var(--primary); font-weight:900; margin-top:30px; letter-spacing:3px;">RECHERCHE EN AFRIQUE...</p>
             </div>
 
-            <!-- VIDÉO -->
+            <!-- VIDÉO LAYOUT -->
             <div id="video-layout">
                 <div class="partner-chip">
-                    <span id="current-partner-name" style="font-weight:900; display:block; font-size:1.2rem;">En attente...</span>
-                    <span id="current-partner-loc" style="font-size:0.75rem; color:var(--primary); font-weight:800; text-transform:uppercase;">GABON</span>
+                    <span id="partner-info-text" style="font-weight:900; font-size:1.2rem;">En attente d'un africain...</span>
                 </div>
                 <video id="remoteVideo" class="remote-v" autoplay playsinline></video>
                 <video id="localVideo" class="local-v" autoplay muted playsinline></video>
                 <div id="video-controls">
                     <button class="ctrl-btn" id="mute-btn" onclick="toggleMute()">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
                     </button>
                 </div>
             </div>
 
-            <!-- CHAT -->
+            <!-- CHAT AREA -->
             <div id="chat-area">
                 <div id="chat-messages"></div>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <input type="text" id="chat-input" placeholder="Ton message ici..." style="margin-bottom:0; border-radius:30px;">
-                    <button class="btn btn-primary" style="width:60px; height:60px; margin-bottom:0; border-radius:50%;" onclick="sendMessage()">➤</button>
+                <div style="display:flex; gap:12px; align-items:center; margin-top:20px;">
+                    <input type="text" id="chat-input" placeholder="Écrire un message..." style="margin-bottom:0; border-radius:28px; background:#1e1e26; border:none;">
+                    <button class="btn btn-primary" style="width:65px; height:65px; margin-bottom:0; border-radius:50%;" onclick="sendMessage()">➤</button>
                 </div>
             </div>
         </div>
 
         <footer>
-            <button class="btn btn-primary" onclick="nextMapane()" style="height:80px; font-size:1.3rem; border-radius:30px;">
-                TROUVER UN GABONAIS 🔄
+            <button class="btn btn-primary" onclick="nextMapane()" style="height:90px; font-size:1.4rem; border-radius:32px;">
+                PARTENAIRE SUIVANT 🔄
             </button>
         </footer>
     </div>
