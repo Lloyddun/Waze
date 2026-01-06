@@ -45,6 +45,8 @@
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                // Serveur TURN public (OpenRelay) pour le relais Android/iPhone
                 {
                     urls: "turn:openrelay.metered.ca:443",
                     username: "openrelayproject",
@@ -56,64 +58,53 @@
 
         const countries = ["Afrique du Sud", "Algérie", "Angola", "Bénin", "Botswana", "Burkina Faso", "Burundi", "Cameroun", "Cap-Vert", "Comores", "Congo-Brazzaville", "Congo-Kinshasa", "Côte d'Ivoire", "Djibouti", "Égypte", "Gabon", "Gambie", "Ghana", "Guinée", "Kenya", "Madagascar", "Mali", "Maroc", "Maurice", "Mauritanie", "Niger", "Nigeria", "Ouganda", "Rwanda", "Sénégal", "Tchad", "Togo", "Tunisie"];
 
-        window.onload = async () => {
-            try {
-                // Initialisation App
-                const app = firebase.initializeApp(firebaseConfig);
-                auth = firebase.auth();
-                
-                // FIX: Forcer Firestore à utiliser long-polling pour éviter l'erreur de connexion
-                db = firebase.firestore();
-                db.settings({
-                    experimentalForceLongPolling: true,
-                    merge: true
-                });
-
-                auth.onAuthStateChanged(user => {
-                    if (user) {
-                        showView('selection-screen');
-                        updateUserStatus(true);
-                        startOnlineCounter();
-                    } else {
-                        showView('auth-screen');
-                    }
-                });
-
-                const select = document.getElementById('signup-country');
-                if(select) {
-                    countries.forEach(c => {
-                        let opt = document.createElement('option');
-                        opt.value = c; opt.textContent = c;
-                        select.appendChild(opt);
-                    });
+        window.onload = () => {
+            firebase.initializeApp(firebaseConfig);
+            auth = firebase.auth();
+            db = firebase.firestore();
+            
+            auth.onAuthStateChanged(user => {
+                if (user) {
+                    showView('selection-screen');
+                    updateUserStatus(true);
+                    startOnlineCounter();
+                } else {
+                    showView('auth-screen');
                 }
-                
-                document.addEventListener("visibilitychange", () => {
-                    if (document.visibilityState === 'hidden') updateUserStatus(false);
-                    else updateUserStatus(true);
-                });
+            });
 
-                const chatInput = document.getElementById('chat-input');
-                chatInput.addEventListener('input', () => {
-                    handleTypingIndicator(true);
-                    clearTimeout(typingTimeout);
-                    typingTimeout = setTimeout(() => handleTypingIndicator(false), 2000);
+            const select = document.getElementById('signup-country');
+            if(select) {
+                countries.forEach(c => {
+                    let opt = document.createElement('option');
+                    opt.value = c; opt.textContent = c;
+                    select.appendChild(opt);
                 });
-
-                chatInput.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        sendMessage();
-                    }
-                });
-            } catch (err) {
-                console.error("Firebase Init Error:", err);
-                showStatusMessage("Erreur de connexion serveur.");
             }
+            
+            document.addEventListener("visibilitychange", () => {
+                if (document.visibilityState === 'hidden') updateUserStatus(false);
+                else updateUserStatus(true);
+            });
+
+            const chatInput = document.getElementById('chat-input');
+            chatInput.addEventListener('input', () => {
+                handleTypingIndicator(true);
+                clearTimeout(typingTimeout);
+                typingTimeout = setTimeout(() => handleTypingIndicator(false), 2000);
+            });
+
+            chatInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
         };
 
         // --- FONCTIONS UTILITAIRES ---
 
+        // Force le codec H.264 dans la SDP (Point critique Android/iPhone)
         function preferH264(sdp) {
             let sdpLines = sdp.split('\r\n');
             let mVideoLineIndex = -1;
@@ -150,7 +141,7 @@
 
         async function handleTypingIndicator(isTyping) {
             if (auth.currentUser && currentPartnerId) {
-                await db.collection("users").doc(auth.currentUser.uid).update({ isTyping: isTyping }).catch(() => {});
+                await db.collection("users").doc(auth.currentUser.uid).update({ isTyping: isTyping });
             }
         }
 
@@ -159,7 +150,7 @@
                 await db.collection("users").doc(auth.currentUser.uid).update({ 
                     isOnline: online, 
                     lastSeen: firebase.firestore.FieldValue.serverTimestamp()
-                }).catch(() => {});
+                });
             }
         }
 
@@ -214,8 +205,7 @@
             showView('main-app');
             await db.collection("users").doc(auth.currentUser.uid).update({
                 currentMode: mode, isOccupied: false, partnerId: null
-            }).catch(e => console.log(e));
-
+            });
             if(mode === 'video') {
                 document.getElementById('video-layout').style.display = 'block';
                 document.getElementById('chat-area').style.display = 'none';
@@ -242,41 +232,41 @@
                     currentSessionId = data.currentSessionId;
                     connectToPartner(data.partnerId);
                 }
-            }, err => console.error("Status Listener Error:", err));
+            });
         }
 
         async function connectToPartner(pId) {
             currentPartnerId = pId;
-            try {
-                const pDoc = await db.collection("users").doc(pId).get();
-                const pData = pDoc.data();
-                if(!pData) return;
-                
-                const infoText = `${pData.name} (${pData.country})`;
-                document.getElementById('partner-info-text').innerText = infoText;
-                document.getElementById('chat-partner-name').innerText = infoText;
-                showStatusMessage(`Connecté à ${pData.name} ✅`);
+            const pDoc = await db.collection("users").doc(pId).get();
+            const pData = pDoc.data();
+            if(!pData) return;
+            
+            const infoText = `${pData.name} (${pData.country})`;
+            document.getElementById('partner-info-text').innerText = infoText;
+            document.getElementById('chat-partner-name').innerText = infoText;
+            showStatusMessage(`Connecté à ${pData.name} ✅`);
 
-                if(typingObserver) typingObserver();
-                typingObserver = db.collection("users").doc(pId).onSnapshot(d => {
-                    const user = d.data();
-                    const indicator = document.getElementById('typing-indicator');
-                    if(user && user.isTyping && user.partnerId === auth.currentUser.uid) {
-                        indicator.innerText = `${user.name} est en train d'écrire...`;
-                        indicator.classList.add('visible');
-                    } else {
-                        indicator.classList.remove('visible');
-                    }
-                });
-
-                if(currentMode === 'text') {
-                    document.getElementById('chat-messages').innerHTML = "";
-                    startChatListener();
+            if(typingObserver) typingObserver();
+            typingObserver = db.collection("users").doc(pId).onSnapshot(d => {
+                const user = d.data();
+                const indicator = document.getElementById('typing-indicator');
+                if(user && user.isTyping && user.partnerId === auth.currentUser.uid) {
+                    indicator.innerText = `${user.name} est en train d'écrire...`;
+                    indicator.classList.add('visible');
                 } else {
-                    setTimeout(() => setupWebRTC(), 1500);
+                    indicator.classList.remove('visible');
                 }
-            } catch (err) { console.error(err); }
+            });
+
+            if(currentMode === 'text') {
+                document.getElementById('chat-messages').innerHTML = "";
+                startChatListener();
+            } else {
+                setTimeout(() => setupWebRTC(), 1500);
+            }
         }
+
+        // --- WEBRTC (COMPATIBILITÉ MAXIMALE) ---
 
         async function setupWebRTC() {
             if(pc) pc.close();
@@ -306,13 +296,17 @@
             pc.onicecandidate = (event) => {
                 if (event.candidate) {
                     const col = auth.currentUser.uid < currentPartnerId ? 'offerCandidates' : 'answerCandidates';
-                    callDoc.collection(col).add(event.candidate.toJSON()).catch(e => console.log(e));
+                    callDoc.collection(col).add(event.candidate.toJSON());
                 }
             };
 
             if (auth.currentUser.uid < currentPartnerId) {
                 const offer = await pc.createOffer({ offerToReceiveVideo: 1, offerToReceiveAudio: 1 });
-                const optimizedOffer = { type: offer.type, sdp: preferH264(offer.sdp) };
+                // Munging SDP pour H264 (iPhone)
+                const optimizedOffer = {
+                    type: offer.type,
+                    sdp: preferH264(offer.sdp)
+                };
                 await pc.setLocalDescription(optimizedOffer);
                 await callDoc.set({ offer: optimizedOffer, answer: null });
 
@@ -321,26 +315,27 @@
                     if (!pc.currentRemoteDescription && d?.answer) {
                         pc.setRemoteDescription(new RTCSessionDescription(d.answer));
                     }
-                }, e => console.log(e));
-                
+                });
                 answerCandidatesUnsubscribe = callDoc.collection('answerCandidates').onSnapshot(s => {
                     s.docChanges().forEach(c => { if(c.type === 'added') pc.addIceCandidate(new RTCIceCandidate(c.doc.data())); });
-                }, e => console.log(e));
+                });
             } else {
                 callUnsubscribe = callDoc.onSnapshot(async snap => {
                     const d = snap.data();
                     if (!pc.currentRemoteDescription && d?.offer) {
                         await pc.setRemoteDescription(new RTCSessionDescription(d.offer));
                         const answer = await pc.createAnswer();
-                        const optimizedAnswer = { type: answer.type, sdp: preferH264(answer.sdp) };
+                        const optimizedAnswer = {
+                            type: answer.type,
+                            sdp: preferH264(answer.sdp)
+                        };
                         await pc.setLocalDescription(optimizedAnswer);
                         await callDoc.update({ answer: optimizedAnswer });
                     }
-                }, e => console.log(e));
-                
+                });
                 offerCandidatesUnsubscribe = callDoc.collection('offerCandidates').onSnapshot(s => {
                     s.docChanges().forEach(c => { if(c.type === 'added') pc.addIceCandidate(new RTCIceCandidate(c.doc.data())); });
-                }, e => console.log(e));
+                });
             }
         }
 
@@ -352,7 +347,7 @@
             if(currentPartnerId) {
                 await db.collection("users").doc(currentPartnerId).update({ partnerId: null, isOccupied: false, isTyping: false }).catch(()=>{});
             }
-            await db.collection("users").doc(myId).update({ partnerId: null, isOccupied: false, isTyping: false }).catch(()=>{});
+            await db.collection("users").doc(myId).update({ partnerId: null, isOccupied: false, isTyping: false });
             resetPartnerUI();
 
             try {
@@ -360,7 +355,7 @@
                     .where("isOnline", "==", true)
                     .where("isOccupied", "==", false)
                     .where("currentMode", "==", currentMode)
-                    .limit(6).get();
+                    .limit(10).get();
 
                 let potential = [];
                 snapshot.forEach(doc => { if(doc.id !== myId) potential.push(doc.data()); });
@@ -399,16 +394,27 @@
 
         async function initCamera() {
             try {
+                // Contraintes optimisées pour iPhone (640x480 stable)
                 const constraints = { 
-                    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, 
-                    audio: true
+                    video: { 
+                        facingMode: "user",
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        frameRate: { max: 30 }
+                    }, 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
                 };
                 localStream = await navigator.mediaDevices.getUserMedia(constraints);
                 const localVid = document.getElementById('localVideo');
                 localVid.srcObject = localStream;
                 localVid.setAttribute('playsinline', '');
                 localVid.setAttribute('muted', '');
-            } catch (e) { showStatusMessage("⚠️ Camera bloquée."); }
+            } catch (e) { 
+                showStatusMessage("⚠️ Camera bloquée par le système.");
+            }
         }
 
         function stopCamera() {
@@ -430,6 +436,8 @@
             document.getElementById('camera-btn').innerHTML = isVideoOff ? '🙈' : '👁️';
         };
 
+        // --- CHAT SYSTEM (ILLIMITÉ) ---
+
         window.sendMessage = async function() {
             const input = document.getElementById('chat-input');
             const text = input.value.trim();
@@ -439,7 +447,7 @@
                 handleTypingIndicator(false);
                 await db.collection("calls").doc(currentSessionId).collection("messages").add({
                     text, senderId: auth.currentUser.uid, timestamp: firebase.firestore.FieldValue.serverTimestamp()
-                }).catch(e => console.log(e));
+                });
             }
         };
 
@@ -457,18 +465,18 @@
                         box.appendChild(div);
                     });
                     box.scrollTop = box.scrollHeight;
-                }, e => console.log(e));
+                });
         }
 
         window.goToMenu = async function() {
             stopCamera();
-            if(auth.currentUser) await db.collection("users").doc(auth.currentUser.uid).update({ isOccupied: false, currentMode: 'none', isTyping: false }).catch(()=>{});
+            if(auth.currentUser) await db.collection("users").doc(auth.currentUser.uid).update({ isOccupied: false, currentMode: 'none', isTyping: false });
             showView('selection-screen');
             resetPartnerUI();
         };
 
         window.realLogout = async function() {
-            if(auth.currentUser) await db.collection("users").doc(auth.currentUser.uid).update({ isOnline: false, isTyping: false }).catch(()=>{});
+            if(auth.currentUser) await db.collection("users").doc(auth.currentUser.uid).update({ isOnline: false, isTyping: false });
             auth.signOut().then(() => location.reload());
         };
 
@@ -559,6 +567,7 @@
         .header-logo { font-weight: 900; font-size: 1.6rem; letter-spacing: -1px; }
         .menu-btn { background: rgba(255,50,50,0.15); border: 1px solid rgba(255,50,50,0.3); padding: 10px 20px; border-radius: 15px; color: #ff5252; font-weight: 700; font-size: 0.8rem; }
 
+        /* Video Layout */
         #video-layout { position: absolute; inset: 0; background: #000; }
         .remote-v { width: 100%; height: 100%; object-fit: cover; background: #000; transition: filter 1s; }
         .remote-v:not(.active) { filter: blur(40px); }
@@ -585,11 +594,17 @@
             color: #fff; font-size: 1.4rem; display: flex; align-items: center; justify-content: center;
         }
 
+        /* Chat Layout */
         #chat-area { 
             display: none; flex-direction: column; height: 100%; width: 100%;
             padding: 100px 20px 140px; background: var(--dark);
         }
-        #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+        #chat-messages { 
+            flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; 
+            padding-right: 5px;
+        }
+        #chat-messages::-webkit-scrollbar { width: 4px; }
+        #chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
 
         .msg { display: flex; width: 100%; }
         .msg.mine { justify-content: flex-end; }
@@ -597,13 +612,18 @@
 
         .bubble { 
             max-width: 85%; padding: 14px 18px; border-radius: 22px; 
-            font-size: 1rem; line-height: 1.5; word-wrap: break-word;
+            font-size: 1rem; line-height: 1.5; word-wrap: break-word; 
+            overflow-wrap: break-word; white-space: pre-wrap;
+            position: relative;
         }
         .msg.mine .bubble { background: var(--gold); color: #000; font-weight: 600; border-bottom-right-radius: 4px; }
         .msg.other .bubble { background: rgba(255,255,255,0.08); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 
-        #typing-indicator { font-size: 0.85rem; color: var(--gold); opacity: 0; transition: 0.3s; height: 20px; font-weight: 700; }
-        #typing-indicator.visible { opacity: 1; }
+        #typing-indicator {
+            font-size: 0.85rem; color: var(--gold); margin-top: 8px; 
+            opacity: 0; transform: translateY(5px); transition: 0.3s; height: 20px; font-weight: 700;
+        }
+        #typing-indicator.visible { opacity: 1; transform: translateY(0); }
 
         footer { 
             position: fixed; bottom: 0; left: 0; right: 0; 
@@ -614,12 +634,15 @@
             width: 100%; max-width: 500px; margin: 0 auto; display: block;
             background: var(--gold); color: #000; height: 65px; border-radius: 32.5px;
             border: none; font-weight: 900; font-size: 1.1rem; box-shadow: 0 15px 40px var(--gold-glow);
+            transition: 0.3s;
         }
+        .next-btn-small.loading { opacity: 0.4; pointer-events: none; }
 
         #snackbar { 
             position: fixed; top: -100px; left: 50%; transform: translateX(-50%); 
             background: #fff; color: #000; padding: 14px 35px; border-radius: 50px; 
-            font-weight: 900; transition: 0.6s; z-index: 2000;
+            font-weight: 900; font-size: 0.95rem; transition: 0.6s cubic-bezier(0.18, 0.89, 0.32, 1.28); z-index: 2000;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
         }
         #snackbar.show { top: 40px; }
     </style>
@@ -631,8 +654,8 @@
         <div class="glass-card" id="login-form">
             <h1 class="logo">WAZE</h1>
             <p style="color: #888; margin-bottom: 35px; font-weight: 600;">L'élite du Mapane Africain 🌍</p>
-            <input type="email" id="login-email" placeholder="Email">
-            <input type="password" id="login-pass" placeholder="Mot de passe">
+            <input type="email" id="login-email" placeholder="Email" autocomplete="username">
+            <input type="password" id="login-pass" placeholder="Mot de passe" autocomplete="current-password">
             <button class="btn-gold" onclick="handleLogin()">REJOINDRE L'ÉLITE</button>
             <p onclick="document.getElementById('login-form').style.display='none'; document.getElementById('signup-form').style.display='block';" style="cursor:pointer; color:var(--gold); font-size: 0.9rem; margin-top:25px; font-weight: 700;">CRÉER UN COMPTE GRATUIT</p>
         </div>
@@ -640,7 +663,7 @@
             <input type="text" id="signup-name" placeholder="Ton Pseudo / Nom">
             <select id="signup-country"></select>
             <input type="email" id="signup-email" placeholder="Email valide">
-            <input type="password" id="signup-pass" placeholder="Mot de passe">
+            <input type="password" id="signup-pass" placeholder="Mot de passe robuste">
             <button class="btn-gold" onclick="handleSignUp()">S'INSCRIRE MAINTENANT</button>
             <p onclick="document.getElementById('signup-form').style.display='none'; document.getElementById('login-form').style.display='block';" style="cursor:pointer; color:var(--gold); font-size: 0.9rem; margin-top:25px; font-weight: 700;">DÉJÀ MEMBRE ? CONNECTE-TOI</p>
         </div>
@@ -687,7 +710,7 @@
             <div style="display:flex; flex-direction:column; gap:10px; padding-top:20px; background: var(--dark);">
                 <div style="display:flex; gap:10px; align-items: flex-end;">
                     <textarea id="chat-input" placeholder="Tape ton message ici..."></textarea>
-                    <button class="btn-gold" style="width:65px; height: 50px; margin:0;" onclick="sendMessage()">➤</button>
+                    <button class="btn-gold" style="width:65px; height: 50px; margin:0; display:flex; align-items:center; justify-content:center;" onclick="sendMessage()">➤</button>
                 </div>
             </div>
         </div>
