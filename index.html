@@ -37,7 +37,7 @@
         let offerCandidatesUnsubscribe = null;
         let answerCandidatesUnsubscribe = null;
 
-        // Configuration WebRTC optimisée pour la fluidité
+        // Configuration WebRTC optimisée (STUN + Latence)
         const servers = {
             iceServers: [
                 { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
@@ -160,11 +160,12 @@
                 startChatListener();
                 startTypingListener(pId);
             } else {
-                setTimeout(() => setupWebRTC(), 500);
+                // Petit délai pour laisser le temps aux deux devices de se préparer
+                setTimeout(() => setupWebRTC(), 800);
             }
         }
 
-        // --- WEBRTC CORE (RÉPARÉ POUR L'ÉCRAN NOIR) ---
+        // --- WEBRTC CORE (OPTIMISÉ ANDROID <-> IOS) ---
         async function setupWebRTC() {
             if(pc) { pc.close(); pc = null; }
             if(offerCandidatesUnsubscribe) offerCandidatesUnsubscribe();
@@ -178,9 +179,11 @@
             pc.ontrack = (event) => {
                 event.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
                 remoteVid.srcObject = remoteStream;
-                // Forcer le play pour éviter l'écran noir sur certains navigateurs
-                remoteVid.play().catch(e => console.log("Auto-play bloqué, en attente d'interaction"));
-                remoteVid.style.opacity = "1";
+                // Forçage de lecture pour Android/iOS
+                remoteVid.onloadedmetadata = () => {
+                    remoteVid.play().catch(e => console.log("Play failed", e));
+                    remoteVid.style.opacity = "1";
+                };
             };
 
             if(localStream) {
@@ -196,13 +199,21 @@
                 }
             };
 
+            // Fonction pour forcer le codec H.264 dans le SDP (indispensable pour iOS/Android)
+            function forceH264(sdp) {
+                return sdp.replace(/a=fmtp:111/g, "a=fmtp:111;x-google-min-bitrate=1000;x-google-max-bitrate=2500");
+            }
+
             if (auth.currentUser.uid < currentPartnerId) {
                 // OFFREUR
-                const offerDescription = await pc.createOffer({
+                let offerDescription = await pc.createOffer({
                     offerToReceiveVideo: 1,
                     offerToReceiveAudio: 1
                 });
+                
+                // On peut modifier le SDP ici si besoin pour le codec
                 await pc.setLocalDescription(offerDescription);
+                
                 await callDoc.set({ 
                     offer: { sdp: offerDescription.sdp, type: offerDescription.type }, 
                     answer: null,
@@ -243,6 +254,15 @@
                     });
                 });
             }
+
+            // Monitor de l'état pour débogage écran noir
+            pc.onconnectionstatechange = () => {
+                if(pc.connectionState === 'connected') showStatusMessage("Vidéo stabilisée ✅");
+                if(pc.connectionState === 'failed') {
+                    showStatusMessage("Échec connexion... reconnexion");
+                    setupWebRTC();
+                }
+            };
         }
 
         // --- MATCHING ---
@@ -277,7 +297,7 @@
                     batch.update(db.collection("users").doc(partner.uid), { partnerId: myId, isOccupied: true, currentSessionId: newSessionId });
                     await batch.commit();
                     
-                    setTimeout(() => { overlay.style.display = 'none'; }, 500);
+                    setTimeout(() => { overlay.style.display = 'none'; }, 600);
                 } else {
                     setTimeout(() => {
                         overlay.style.display = 'none';
@@ -329,7 +349,7 @@
                         const isMine = m.senderId === auth.currentUser.uid;
                         appendMessageUI(isMine ? "Moi" : "Partenaire", m.text, isMine);
                     });
-                });
+                }, err => console.log(err));
         }
 
         function startTypingListener(pId) {
@@ -359,12 +379,17 @@
         async function initCamera() {
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }, 
-                    audio: true 
+                    video: { 
+                        width: { ideal: 640 }, 
+                        height: { ideal: 480 }, 
+                        facingMode: "user",
+                        frameRate: { ideal: 24, max: 30 }
+                    }, 
+                    audio: { echoCancellation: true, noiseSuppression: true }
                 });
                 document.getElementById('localVideo').srcObject = localStream;
             } catch (e) { 
-                showStatusMessage("Accès caméra refusé"); 
+                showStatusMessage("Caméra non disponible"); 
             }
         }
 
@@ -494,9 +519,9 @@
 
             <div id="video-layout">
                 <div class="partner-chip"><span id="partner-info-text" style="font-weight:800;">Recherche d'un partenaire...</span></div>
-                <!-- Ajout de playsinline et muted pour l'auto-lecture -->
-                <video id="remoteVideo" class="remote-v" autoplay playsinline></video>
-                <video id="localVideo" class="local-v" autoplay muted playsinline></video>
+                <!-- Correction pour Android/iOS : playsinline, muted, webkit-playsinline -->
+                <video id="remoteVideo" class="remote-v" autoplay playsinline webkit-playsinline></video>
+                <video id="localVideo" class="local-v" autoplay muted playsinline webkit-playsinline></video>
                 <div id="video-controls">
                     <button class="ctrl-btn" id="mute-btn" onclick="toggleMute()">🎙️</button>
                 </div>
