@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>WAZE | Le Mapane Premium 241</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;900&display=swap" rel="stylesheet">
+    <!-- Firebase SDK Modules -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, where, deleteDoc, addDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyAlOqC65tOuOnjmpnuMVH-ES2HaSOPVGT4",
+            authDomain: "waze-5644b.firebaseapp.com",
+            projectId: "waze-5644b",
+            storageBucket: "waze-5644b.firebasestorage.app",
+            messagingSenderId: "880209868778",
+            appId: "1:880209868778:web:2531beb85ba08432506493"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth();
+        const db = getFirestore();
+        const provider = new GoogleAuthProvider();
+
+        let currentUserData = null;
+        let localStream = null;
+        let mode = 'video';
+
+        // AUTHENTIFICATION
+        window.loginWithGoogle = async () => {
+            try {
+                const result = await signInWithPopup(auth, provider);
+                checkUser(result.user);
+            } catch (error) { console.error(error); }
+        };
+
+        async function checkUser(user) {
+            const docRef = doc(db, "users", user.uid);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+                currentUserData = docSnap.data();
+                showSelection();
+            } else {
+                document.getElementById('login-box').classList.add('hide');
+                setTimeout(() => {
+                    document.getElementById('login-box').style.display = 'none';
+                    document.getElementById('register-form').style.display = 'flex';
+                }, 400);
+            }
+        }
+
+        window.finishRegistration = async () => {
+            const user = auth.currentUser;
+            const name = document.getElementById('reg-name').value;
+            const province = document.getElementById('reg-province').value;
+            const gender = document.getElementById('reg-gender').value;
+
+            if (name && province && gender) {
+                const data = { uid: user.uid, name, province, gender, email: user.email, joinedAt: new Date() };
+                await setDoc(doc(db, "users", user.uid), data);
+                currentUserData = data;
+                showSelection();
+            }
+        };
+
+        function showSelection() {
+            document.getElementById('auth-screen').style.display = 'none';
+            document.getElementById('selection-screen').style.display = 'flex';
+        }
+
+        window.startChatMode = (m) => {
+            mode = m;
+            document.getElementById('selection-screen').classList.add('fade-out');
+            setTimeout(() => {
+                document.getElementById('selection-screen').style.display = 'none';
+                document.getElementById('main-app').style.display = 'flex';
+                if(mode === 'video') {
+                    initCamera();
+                    document.getElementById('video-layout').style.display = 'block';
+                    document.getElementById('chat-area').classList.add('video-mode');
+                } else {
+                    document.getElementById('video-layout').style.display = 'none';
+                    document.getElementById('chat-area').classList.add('full-mode');
+                }
+            }, 500);
+        };
+
+        async function initCamera() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('localVideo').srcObject = localStream;
+            } catch (e) { console.warn("Caméra indisponible"); }
+        }
+
+        window.nextMapane = async () => {
+            const overlay = document.getElementById('matching-overlay');
+            overlay.classList.add('active');
+            
+            // Logic de recherche fictive pour l'UI
+            setTimeout(() => {
+                overlay.classList.remove('active');
+                const mock = { name: "Mavoungou", province: "Nyanga" };
+                document.getElementById('current-partner-name').innerText = mock.name;
+                document.getElementById('current-partner-loc').innerText = mock.province;
+                appendMessage("Système", `Bienvenue dans le Mapane de ${mock.name}`);
+            }, 1500);
+        };
+
+        window.sendMessage = () => {
+            const input = document.getElementById('chat-input');
+            if(input.value.trim() !== "") {
+                appendMessage("Moi", input.value);
+                input.value = "";
+            }
+        };
+
+        function appendMessage(user, text) {
+            const box = document.getElementById('chat-messages');
+            const msg = document.createElement('div');
+            msg.className = 'message-bubble ' + (user === "Moi" ? "mine" : "other");
+            msg.innerHTML = `<span class="sender">${user}</span><p>${text}</p>`;
+            box.appendChild(msg);
+            box.scrollTop = box.scrollHeight;
+        }
+
+        window.logout = () => signOut(auth).then(() => location.reload());
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) checkUser(user);
+        });
+    </script>
+
+    <style>
+        :root {
+            --primary: #fbc02d;
+            --primary-dark: #c49000;
+            --bg: #0a0a0a;
+            --card: #161616;
+            --glass: rgba(255, 255, 255, 0.05);
+            --border: rgba(255, 255, 255, 0.1);
+            --text: #ffffff;
+            --text-dim: #a0a0a0;
+        }
+
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body, html { 
+            margin: 0; padding: 0; 
+            font-family: 'Outfit', sans-serif; 
+            background: var(--bg); 
+            color: var(--text); 
+            height: 100vh; overflow: hidden;
+        }
+
+        /* --- AUTH SCREEN --- */
+        .screen {
+            position: fixed; inset: 0;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            background: radial-gradient(circle at center, #1a1a1a 0%, #000 100%);
+            padding: 20px; z-index: 100;
+            transition: opacity 0.5s ease;
+        }
+
+        .auth-card {
+            background: var(--card);
+            padding: 40px; border-radius: 24px;
+            width: 100%; max-width: 400px;
+            text-align: center;
+            border: 1px solid var(--border);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }
+
+        .logo-main { 
+            font-size: 4.5rem; font-weight: 900; 
+            color: var(--primary); margin: 0;
+            letter-spacing: -3px; line-height: 1;
+        }
+
+        .tagline { color: var(--text-dim); margin-bottom: 30px; font-weight: 300; }
+
+        /* --- BUTTONS --- */
+        .btn {
+            width: 100%; padding: 16px; border-radius: 14px;
+            border: none; font-weight: 600; font-size: 1rem;
+            cursor: pointer; transition: all 0.2s ease;
+            display: flex; align-items: center; justify-content: center; gap: 10px;
+        }
+
+        .btn-google { background: white; color: black; margin-bottom: 15px; }
+        .btn-google:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(255,255,255,0.1); }
+
+        .btn-primary { background: var(--primary); color: black; }
+        .btn-primary:hover { background: var(--primary-dark); transform: scale(1.02); }
+
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: white; margin-top: 10px; }
+
+        /* --- INPUTS --- */
+        .form-group { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+        input, select {
+            background: #222; border: 1px solid var(--border);
+            padding: 14px; border-radius: 12px; color: white;
+            font-family: inherit; font-size: 1rem;
+        }
+        input:focus { outline: none; border-color: var(--primary); }
+
+        /* --- APP INTERFACE --- */
+        #main-app { display: none; flex-direction: column; height: 100vh; }
+
+        header {
+            padding: 15px 20px; display: flex; justify-content: space-between;
+            align-items: center; background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
+        }
+
+        .status-badge {
+            background: rgba(46, 213, 115, 0.1); color: #2ed573;
+            padding: 4px 12px; border-radius: 20px; font-size: 0.75rem;
+            font-weight: 600; display: flex; align-items: center; gap: 5px;
+        }
+        .status-dot { width: 6px; height: 6px; background: #2ed573; border-radius: 50%; }
+
+        /* --- VIDEO LAYOUT --- */
+        .video-workspace { flex: 1; position: relative; display: flex; flex-direction: column; background: #000; }
+        
+        #video-layout { height: 100%; position: relative; }
+        .remote-v { width: 100%; height: 100%; object-fit: cover; }
+        .local-v {
+            position: absolute; top: 20px; right: 20px;
+            width: 110px; height: 160px; border-radius: 16px;
+            border: 2px solid var(--primary); object-fit: cover;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 10;
+        }
+
+        /* Partner Info Chip */
+        .partner-chip {
+            position: absolute; top: 20px; left: 20px;
+            background: rgba(0,0,0,0.6); backdrop-filter: blur(8px);
+            padding: 10px 18px; border-radius: 14px;
+            border: 1px solid var(--border); display: flex; flex-direction: column;
+        }
+        .partner-chip .name { font-weight: 600; font-size: 1.1rem; }
+        .partner-chip .loc { font-size: 0.8rem; color: var(--primary); }
+
+        /* --- CHAT AREA --- */
+        #chat-area {
+            position: absolute; bottom: 100px; left: 0; width: 100%;
+            padding: 20px; display: flex; flex-direction: column;
+            pointer-events: none;
+        }
+        #chat-area.full-mode { height: 80%; bottom: 80px; pointer-events: auto; background: var(--bg); }
+
+        #chat-messages {
+            flex: 1; overflow-y: auto; display: flex; flex-direction: column;
+            gap: 10px; margin-bottom: 15px; pointer-events: auto;
+        }
+
+        .message-bubble { 
+            max-width: 80%; padding: 10px 15px; border-radius: 18px; font-size: 0.95rem;
+            animation: slideUp 0.3s ease;
+        }
+        .message-bubble p { margin: 0; }
+        .message-bubble.other { background: var(--card); align-self: flex-start; border-bottom-left-radius: 4px; border: 1px solid var(--border); }
+        .message-bubble.mine { background: var(--primary); color: black; align-self: flex-end; border-bottom-right-radius: 4px; }
+        .sender { font-size: 0.7rem; font-weight: bold; opacity: 0.7; display: block; margin-bottom: 2px; }
+
+        .chat-input-row {
+            display: flex; gap: 10px; pointer-events: auto;
+        }
+        .chat-input-row input { flex: 1; border-radius: 30px; background: rgba(255,255,255,0.1); border: 1px solid var(--border); }
+
+        /* --- MATCHING OVERLAY --- */
+        #matching-overlay {
+            position: absolute; inset: 0; background: rgba(0,0,0,0.95);
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 50;
+        }
+        #matching-overlay.active { display: flex; animation: fadeIn 0.3s ease; }
+
+        .spinner {
+            width: 60px; height: 60px; border: 4px solid var(--border);
+            border-top: 4px solid var(--primary); border-radius: 50%;
+            animation: spin 1s linear infinite; margin-bottom: 20px;
+        }
+
+        /* --- FOOTER --- */
+        .app-footer {
+            height: 90px; background: #000; padding: 15px 20px;
+            display: flex; align-items: center; justify-content: center;
+            border-top: 1px solid var(--border);
+        }
+        .btn-swap {
+            max-width: 500px; border-radius: 50px; font-size: 1.2rem;
+            box-shadow: 0 10px 20px rgba(251, 192, 45, 0.2);
+        }
+
+        /* --- ANIMATIONS --- */
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        @keyframes slideUp { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .fade-out { opacity: 0; pointer-events: none; }
+        .hide { transform: scale(0.9); opacity: 0; }
+
+    </style>
+</head>
+<body>
+
+    <!-- 1. AUTH SCREEN -->
+    <div id="auth-screen" class="screen">
+        <div class="auth-card" id="login-box">
+            <h1 class="logo-main">WAZE</h1>
+            <p class="tagline">Le Mapane Virtuel du Gabon 🇬🇦</p>
+            <button class="btn btn-google" onclick="loginWithGoogle()">
+                <img src="https://www.gstatic.com/images/branding/product/1x/gsa_512dp.png" width="20" alt="G">
+                Rejoindre le Mapane
+            </button>
+            <p style="font-size: 0.8rem; color: var(--text-dim);">Discussion vidéo et message instantanée</p>
+        </div>
+
+        <div class="auth-card" id="register-form" style="display:none;">
+            <h2 style="margin-top:0">Ton Profil</h2>
+            <div class="form-group">
+                <input type="text" id="reg-name" placeholder="Pseudo / Petit nom">
+                <select id="reg-gender">
+                    <option value="">Sexe</option>
+                    <option value="M">Homme</option>
+                    <option value="F">Femme</option>
+                </select>
+                <select id="reg-province">
+                    <option value="">Ta Province</option>
+                    <option value="Estuaire">Estuaire</option>
+                    <option value="Haut-Ogooué">Haut-Ogooué</option>
+                    <option value="Moyen-Ogooué">Moyen-Ogooué</option>
+                    <option value="Ngounié">Ngounié</option>
+                    <option value="Nyanga">Nyanga</option>
+                    <option value="Ogooué-Ivindo">Ogooué-Ivindo</option>
+                    <option value="Ogooué-Lolo">Ogooué-Lolo</option>
+                    <option value="Ogooué-Maritime">Ogooué-Maritime</option>
+                    <option value="Woleu-Ntem">Woleu-Ntem</option>
+                </select>
+                <button class="btn btn-primary" onclick="finishRegistration()">VALIDER</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. MODE SELECTION -->
+    <div id="selection-screen" class="screen" style="display:none;">
+        <div class="auth-card">
+            <h3>Bonjour ! 👋</h3>
+            <p class="tagline">Choisis comment tu veux mapaner aujourd'hui</p>
+            <button class="btn btn-primary" onclick="startChatMode('video')">Discussion Vidéo</button>
+            <button class="btn btn-outline" onclick="startChatMode('text')">Messages Privés</button>
+            <button class="btn btn-outline" style="color:#ff4444" onclick="logout()">Déconnexion</button>
+        </div>
+    </div>
+
+    <!-- 3. MAIN APP -->
+    <div id="main-app">
+        <header>
+            <div style="font-weight: 900; letter-spacing: -1px; font-size: 1.4rem;">WAZE<span style="color:var(--primary)">.GA</span></div>
+            <div class="status-badge"><div class="status-dot"></div> Live Match</div>
+            <button onclick="location.reload()" style="background:none; border:none; color:var(--text-dim); cursor:pointer;">Quitter</button>
+        </header>
+
+        <div class="video-workspace">
+            <!-- Recherche Overlay -->
+            <div id="matching-overlay">
+                <div class="spinner"></div>
+                <p style="font-weight: 600; letter-spacing: 1px;">RECHERCHE D'UN COMPATRIOTE...</p>
+                <p style="color:var(--text-dim); font-size: 0.9rem;">Prépare-toi, ça va chauffer !</p>
+            </div>
+
+            <div id="video-layout">
+                <div class="partner-chip">
+                    <span class="name" id="current-partner-name">En attente</span>
+                    <span class="loc" id="current-partner-loc">Gabon</span>
+                </div>
+                <video id="remoteVideo" class="remote-v" autoplay playsinline poster="https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&q=80&w=1000"></video>
+                <video id="localVideo" class="local-v" autoplay muted playsinline></video>
+            </div>
+
+            <!-- Chat Area -->
+            <div id="chat-area">
+                <div id="chat-messages"></div>
+                <div class="chat-input-row">
+                    <input type="text" id="chat-input" placeholder="Dis quelque chose de gentil...">
+                    <button class="btn btn-primary" style="width: auto; padding: 10px 20px; border-radius: 30px;" onclick="sendMessage()">Envoyer</button>
+                </div>
+            </div>
+        </div>
+
+        <footer class="app-footer">
+            <button class="btn btn-primary btn-swap" onclick="nextMapane()">
+                PROCHAIN MAPANE 🔄
+            </button>
+        </footer>
+    </div>
+
+</body>
+</html>
+
