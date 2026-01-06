@@ -2,11 +2,11 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>WAZE AFRICA | Connectez l'Afrique</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;900&display=swap" rel="stylesheet">
     
-    <!-- Firebase SDK (Version Compat pour stabilité) -->
+    <!-- Firebase SDK (Version Compat) -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
@@ -22,17 +22,8 @@
             appId: "1:880209868778:web:2531beb85ba08432506493"
         };
 
-        firebase.initializeApp(firebaseConfig);
-        const auth = firebase.auth();
-        const db = firebase.firestore();
-
-        // WebRTC Config
-        const servers = {
-            iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }],
-            iceCandidatePoolSize: 10,
-        };
-
-        let pc = new RTCPeerConnection(servers);
+        // Variables globales
+        let auth, db, pc;
         let localStream = null;
         let remoteStream = null;
         let currentMode = 'video'; 
@@ -40,12 +31,34 @@
         let isMuted = false;
         let statusObserver = null;
         let chatObserver = null;
+        let typingTimeout = null;
+
+        const servers = {
+            iceServers: [
+                { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
+            ],
+            iceCandidatePoolSize: 10,
+        };
 
         const countries = [
             "Afrique du Sud", "Algérie", "Angola", "Bénin", "Botswana", "Burkina Faso", "Burundi", "Cameroun", "Cap-Vert", "Comores", "Congo-Brazzaville", "Congo-Kinshasa", "Côte d'Ivoire", "Djibouti", "Égypte", "Érythrée", "Eswatini", "Éthiopie", "Gabon", "Gambie", "Ghana", "Guinée", "Guinée-Bissau", "Guinée équatoriale", "Kenya", "Lesotho", "Liberia", "Libye", "Madagascar", "Malawi", "Mali", "Maroc", "Maurice", "Mauritanie", "Mozambique", "Namibie", "Niger", "Nigeria", "Ouganda", "Rwanda", "Sao Tomé-et-Principe", "Sénégal", "Seychelles", "Sierra Leone", "Somalie", "Soudan", "Soudan du Sud", "Tanzanie", "Tchad", "Togo", "Tunisie", "Zambie", "Zimbabwe"
         ];
 
         window.onload = () => {
+            // Initialisation sécurisée de Firebase
+            if (typeof firebase !== 'undefined') {
+                firebase.initializeApp(firebaseConfig);
+                auth = firebase.auth();
+                db = firebase.firestore();
+                
+                auth.onAuthStateChanged(user => {
+                    if (user) showView('selection-screen');
+                    else showView('auth-screen');
+                });
+            } else {
+                console.error("Firebase non chargé");
+            }
+
             const select = document.getElementById('signup-country');
             if(select) {
                 countries.forEach(c => {
@@ -57,7 +70,7 @@
             }
         };
 
-        // --- AUTHENTIFICATION ---
+        // --- AUTH ---
         window.handleSignUp = async function() {
             const email = document.getElementById('signup-email').value.trim();
             const pass = document.getElementById('signup-pass').value.trim();
@@ -65,7 +78,7 @@
             const country = document.getElementById('signup-country').value;
 
             if (!email || !pass || !name || !country) {
-                showStatusMessage("Veuillez remplir tous les champs !");
+                showStatusMessage("Champs manquants !");
                 return;
             }
 
@@ -79,6 +92,7 @@
                     currentMode: 'none',
                     isOccupied: false,
                     partnerId: null,
+                    isTyping: false,
                     lastSeen: firebase.firestore.FieldValue.serverTimestamp()
                 });
             } catch (error) { showStatusMessage(error.message); }
@@ -144,12 +158,16 @@
             if(currentMode === 'text') {
                 document.getElementById('chat-messages').innerHTML = "";
                 startChatListener();
+                startTypingListener(pId);
             } else {
                 setupWebRTC();
             }
         }
 
         async function setupWebRTC() {
+            if(pc) pc.close();
+            pc = new RTCPeerConnection(servers);
+
             const callId = [auth.currentUser.uid, currentPartnerId].sort().join('_');
             const callDoc = db.collection('calls').doc(callId);
             
@@ -163,21 +181,30 @@
             remoteStream = new MediaStream();
             pc.ontrack = (event) => {
                 event.streams[0].getTracks().forEach((track) => remoteStream.addTrack(track));
-                document.getElementById('remoteVideo').style.opacity = "1";
+                const remoteVid = document.getElementById('remoteVideo');
+                remoteVid.srcObject = remoteStream;
+                remoteVid.style.opacity = "1";
             };
-            document.getElementById('remoteVideo').srcObject = remoteStream;
 
-            localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+            if(localStream) {
+                localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+            }
 
             if (auth.currentUser.uid < currentPartnerId) {
                 const offerDescription = await pc.createOffer();
                 await pc.setLocalDescription(offerDescription);
                 await callDoc.set({ offer: { sdp: offerDescription.sdp, type: offerDescription.type } });
+                
                 callDoc.onSnapshot((snap) => {
                     const d = snap.data();
-                    if (!pc.currentRemoteDescription && d?.answer) pc.setRemoteDescription(new RTCSessionDescription(d.answer));
+                    if (!pc.currentRemoteDescription && d?.answer) {
+                        pc.setRemoteDescription(new RTCSessionDescription(d.answer));
+                    }
                 });
-                callDoc.collection('answerCandidates').onSnapshot(s => s.docChanges().forEach(c => c.type === 'added' && pc.addIceCandidate(new RTCIceCandidate(c.doc.data()))));
+
+                callDoc.collection('answerCandidates').onSnapshot(s => s.docChanges().forEach(c => {
+                    if (c.type === 'added') pc.addIceCandidate(new RTCIceCandidate(c.doc.data()));
+                }));
             } else {
                 callDoc.onSnapshot(async (snap) => {
                     const d = snap.data();
@@ -188,7 +215,10 @@
                         await callDoc.update({ answer: { sdp: answer.sdp, type: answer.type } });
                     }
                 });
-                callDoc.collection('offerCandidates').onSnapshot(s => s.docChanges().forEach(c => c.type === 'added' && pc.addIceCandidate(new RTCIceCandidate(c.doc.data()))));
+
+                callDoc.collection('offerCandidates').onSnapshot(s => s.docChanges().forEach(c => {
+                    if (c.type === 'added') pc.addIceCandidate(new RTCIceCandidate(c.doc.data()));
+                }));
             }
         }
 
@@ -208,38 +238,54 @@
                 });
         }
 
+        function startTypingListener(pId) {
+            db.collection("users").doc(pId).onSnapshot(doc => {
+                const data = doc.data();
+                const typingIndicator = document.getElementById('typing-indicator');
+                if(data?.isTyping) {
+                    typingIndicator.innerText = `${data.name} est en train d'écrire...`;
+                    typingIndicator.style.opacity = "1";
+                } else {
+                    typingIndicator.style.opacity = "0";
+                }
+            });
+        }
+
+        function handleTyping() {
+            db.collection("users").doc(auth.currentUser.uid).update({ isTyping: true });
+            if(typingTimeout) clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => {
+                db.collection("users").doc(auth.currentUser.uid).update({ isTyping: false });
+            }, 2000);
+        }
+
         function resetPartnerUI() {
             if(chatObserver) chatObserver();
             currentPartnerId = null;
-            document.getElementById('partner-info-text').innerText = "Recherche en cours...";
+            document.getElementById('partner-info-text').innerText = "Recherche...";
             document.getElementById('chat-messages').innerHTML = "";
-            document.getElementById('remoteVideo').style.opacity = "0.2";
+            document.getElementById('remoteVideo').style.opacity = "0.1";
             document.getElementById('remoteVideo').srcObject = null;
-            pc.close();
-            pc = new RTCPeerConnection(servers);
+            if(pc) { pc.close(); pc = null; }
         }
 
-        // --- MATCHING ET SUPPRESSION AUTO ---
         window.nextMapane = async function() {
             const overlay = document.getElementById('matching-overlay');
             overlay.style.display = 'flex';
-
             const myId = auth.currentUser.uid;
             
-            // Suppression des messages avant de swap
             if(currentPartnerId) {
                 const chatId = [myId, currentPartnerId].sort().join('_');
                 const msgs = await db.collection("chats").doc(chatId).collection("messages").get();
                 const batch = db.batch();
                 msgs.forEach(doc => batch.delete(doc.ref));
                 await batch.commit();
-
-                await db.collection("users").doc(currentPartnerId).update({ partnerId: null, isOccupied: false });
+                await db.collection("users").doc(currentPartnerId).update({ partnerId: null, isOccupied: false, isTyping: false });
                 const callId = [myId, currentPartnerId].sort().join('_');
                 await db.collection('calls').doc(callId).delete().catch(()=>{});
             }
 
-            await db.collection("users").doc(myId).update({ partnerId: null, isOccupied: false });
+            await db.collection("users").doc(myId).update({ partnerId: null, isOccupied: false, isTyping: false });
             resetPartnerUI();
 
             try {
@@ -247,7 +293,7 @@
                     .where("isOnline", "==", true)
                     .where("isOccupied", "==", false)
                     .where("currentMode", "==", currentMode)
-                    .limit(5)
+                    .limit(10)
                     .get();
 
                 let potential = [];
@@ -257,11 +303,11 @@
                     const partner = potential[Math.floor(Math.random() * potential.length)];
                     await db.collection("users").doc(myId).update({ partnerId: partner.uid, isOccupied: true });
                     await db.collection("users").doc(partner.uid).update({ partnerId: myId, isOccupied: true });
-                    setTimeout(() => { overlay.style.display = 'none'; }, 800);
+                    setTimeout(() => { overlay.style.display = 'none'; }, 600);
                 } else {
                     setTimeout(() => {
                         overlay.style.display = 'none';
-                        showStatusMessage("Aucun utilisateur libre en Afrique...");
+                        showStatusMessage("Recherche en cours...");
                     }, 1500);
                 }
             } catch (e) { overlay.style.display = 'none'; }
@@ -273,6 +319,7 @@
             if(text && currentPartnerId) {
                 const chatId = [auth.currentUser.uid, currentPartnerId].sort().join('_');
                 input.value = "";
+                db.collection("users").doc(auth.currentUser.uid).update({ isTyping: false });
                 await db.collection("chats").doc(chatId).collection("messages").add({
                     text: text, senderId: auth.currentUser.uid,
                     timestamp: firebase.firestore.FieldValue.serverTimestamp()
@@ -291,9 +338,12 @@
 
         async function initCamera() {
             try {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }, 
+                    audio: true 
+                });
                 document.getElementById('localVideo').srcObject = localStream;
-            } catch (e) { showStatusMessage("Accès caméra requis !"); }
+            } catch (e) { showStatusMessage("Caméra non accessible"); }
         }
 
         function stopCamera() {
@@ -313,7 +363,7 @@
             if(chatObserver) chatObserver();
             stopCamera();
             if(auth.currentUser) {
-                await db.collection("users").doc(auth.currentUser.uid).update({ isOccupied: false, currentMode: 'none', partnerId: null });
+                await db.collection("users").doc(auth.currentUser.uid).update({ isOccupied: false, currentMode: 'none', partnerId: null, isTyping: false });
             }
             showView('selection-screen');
         };
@@ -329,11 +379,6 @@
             snack.classList.add('show');
             setTimeout(() => snack.classList.remove('show'), 3000);
         }
-
-        auth.onAuthStateChanged(user => {
-            if (user) showView('selection-screen');
-            else showView('auth-screen');
-        });
     </script>
 
     <style>
@@ -342,164 +387,170 @@
             --primary-glow: rgba(251, 192, 45, 0.4);
             --bg: #0d0d11; 
             --card: #18181f; 
-            --border: rgba(255, 255, 255, 0.05); 
+            --border: rgba(255, 255, 255, 0.08); 
             --text: #f8f8f8; 
             --accent: #2c2c36;
         }
 
-        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; font-family: 'Outfit', sans-serif; }
-        body, html { margin: 0; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; font-family: 'Outfit', sans-serif; outline: none; }
+        body, html { margin: 0; background: var(--bg); color: var(--text); height: 100vh; width: 100vw; overflow: hidden; }
 
-        .screen-container { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 100; animation: fadeIn 0.5s ease; }
-        @keyframes fadeIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+        .screen-container { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
 
         .auth-card { 
-            background: var(--card); padding: 45px 35px; border-radius: 40px; 
-            width: 90%; max-width: 420px; text-align: center; 
-            border: 1px solid var(--border); box-shadow: 0 40px 80px rgba(0,0,0,0.6);
+            background: var(--card); padding: 40px 30px; border-radius: 35px; 
+            width: 100%; max-width: 400px; text-align: center; 
+            border: 1px solid var(--border); box-shadow: 0 30px 60px rgba(0,0,0,0.5);
         }
 
-        .logo-main { font-size: 4.5rem; font-weight: 900; color: var(--primary); margin: 0; letter-spacing: -4px; text-shadow: 0 10px 30px var(--primary-glow); }
+        .logo-main { font-size: 3.5rem; font-weight: 900; color: var(--primary); margin: 0; letter-spacing: -3px; text-shadow: 0 8px 20px var(--primary-glow); }
         
         .btn { 
-            width: 100%; padding: 22px; border-radius: 24px; border: none; 
-            font-weight: 900; cursor: pointer; transition: 0.3s; 
-            margin-bottom: 15px; display: flex; align-items: center; justify-content: center; gap: 12px;
-            text-transform: uppercase; letter-spacing: 1.5px;
+            width: 100%; padding: 16px; border-radius: 20px; border: none; 
+            font-weight: 800; cursor: pointer; transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1); 
+            margin-bottom: 12px; display: flex; align-items: center; justify-content: center; gap: 10px;
+            text-transform: uppercase; font-size: 0.85rem; letter-spacing: 1px;
         }
-        .btn:active { transform: scale(0.97); }
-        .btn-primary { background: var(--primary); color: #000; box-shadow: 0 15px 35px var(--primary-glow); }
-        .btn-outline { background: rgba(255,255,255,0.03); color: #fff; border: 1px solid var(--border); backdrop-filter: blur(10px); }
+        .btn:active { transform: scale(0.96); opacity: 0.9; }
+        .btn-primary { background: var(--primary); color: #000; }
+        .btn-outline { background: rgba(255,255,255,0.04); color: #fff; border: 1px solid var(--border); }
         
         input, select { 
-            width: 100%; background: #22222b; border: 1px solid var(--border); 
-            padding: 20px; border-radius: 20px; color: #fff; margin-bottom: 18px; 
-            font-size: 1rem; transition: 0.3s;
+            width: 100%; background: #202028; border: 1px solid var(--border); 
+            padding: 16px; border-radius: 16px; color: #fff; margin-bottom: 14px; 
+            font-size: 0.95rem; -webkit-appearance: none;
         }
-        input:focus { border-color: var(--primary); outline: none; }
 
         header { 
-            width: 100%; padding: 25px 30px; display: flex; justify-content: space-between; 
-            align-items: center; z-index: 110; position: absolute; top:0; background: linear-gradient(to bottom, #000, transparent);
+            width: 100%; padding: 20px 25px; display: flex; justify-content: space-between; 
+            align-items: center; z-index: 110; position: absolute; top:0;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
         }
 
-        .app-body { flex: 1; width: 100%; position: relative; overflow: hidden; }
+        .app-body { flex: 1; width: 100%; position: relative; display: flex; flex-direction: column; }
 
-        #video-layout { position: absolute; inset: 0; background: #000; }
-        .remote-v { width: 100%; height: 100%; object-fit: cover; opacity: 0.2; transition: 0.8s ease; }
+        #video-layout { position: absolute; inset: 0; background: #000; overflow: hidden; }
+        .remote-v { width: 100%; height: 100%; object-fit: cover; opacity: 0.1; transition: 0.5s; }
         .local-v { 
-            position: absolute; bottom: 120px; right: 25px; 
-            width: 140px; height: 190px; border-radius: 30px; 
+            position: absolute; top: 100px; right: 20px; 
+            width: 100px; height: 140px; border-radius: 20px; 
             border: 2px solid var(--primary); object-fit: cover; 
-            z-index: 20; box-shadow: 0 20px 50px rgba(0,0,0,0.8); background: #111;
+            z-index: 120; box-shadow: 0 10px 30px rgba(0,0,0,0.6); background: #111;
         }
         
         .partner-chip { 
-            position: absolute; top: 100px; left: 25px; 
-            background: rgba(0,0,0,0.6); backdrop-filter: blur(25px); 
-            padding: 18px 25px; border-radius: 25px; z-index: 20; 
-            border: 1px solid rgba(255,255,255,0.1);
+            position: absolute; top: 90px; left: 20px; 
+            background: rgba(0,0,0,0.5); backdrop-filter: blur(20px); 
+            padding: 12px 20px; border-radius: 20px; z-index: 115; 
+            border: 1px solid rgba(255,255,255,0.1); font-size: 0.85rem;
         }
 
-        #video-controls { position: absolute; bottom: 120px; left: 25px; display: flex; flex-direction: column; gap: 15px; z-index: 30; }
-        .ctrl-btn { width: 60px; height: 60px; border-radius: 22px; background: rgba(255,255,255,0.05); color: white; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        #video-controls { position: absolute; bottom: 120px; left: 20px; display: flex; flex-direction: column; gap: 12px; z-index: 130; }
+        .ctrl-btn { width: 45px; height: 45px; border-radius: 16px; background: rgba(0,0,0,0.4); color: white; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; backdrop-filter: blur(10px); }
 
-        #chat-area { display: none; flex-direction: column; height: 100%; padding: 110px 25px 120px; background: var(--bg); }
-        #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; padding-bottom: 20px; }
-        .message-bubble { padding: 18px 24px; border-radius: 28px; max-width: 80%; line-height: 1.5; }
-        .message-bubble.mine { background: var(--primary); color: #000; align-self: flex-end; border-bottom-right-radius: 5px; font-weight: 600; }
-        .message-bubble.other { background: var(--accent); align-self: flex-start; border-bottom-left-radius: 5px; border: 1px solid var(--border); }
-        .sender { font-size: 0.75rem; font-weight: 900; opacity: 0.5; text-transform: uppercase; margin-bottom: 5px; display: block; }
+        #chat-area { display: none; flex-direction: column; height: 100%; padding: 90px 20px 120px; background: var(--bg); }
+        #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-bottom: 10px; }
+        .message-bubble { padding: 14px 20px; border-radius: 22px; max-width: 85%; line-height: 1.4; font-size: 0.9rem; }
+        .message-bubble.mine { background: var(--primary); color: #000; align-self: flex-end; border-bottom-right-radius: 4px; font-weight: 600; }
+        .message-bubble.other { background: var(--accent); align-self: flex-start; border-bottom-left-radius: 4px; border: 1px solid var(--border); }
+        .sender { font-size: 0.65rem; font-weight: 800; opacity: 0.5; text-transform: uppercase; margin-bottom: 4px; display: block; }
 
-        #matching-overlay { position: absolute; inset: 0; background: rgba(10,10,14,0.98); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 200; }
-        .spinner { width: 80px; height: 80px; border: 4px solid rgba(251,192,45,0.05); border-top: 4px solid var(--primary); border-radius: 50%; animation: spin 1s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+        #typing-indicator { font-size: 0.75rem; color: var(--primary); margin-bottom: 8px; font-weight: 600; opacity: 0; transition: 0.3s; height: 16px; }
+
+        #matching-overlay { position: absolute; inset: 0; background: rgba(10,10,14,0.95); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 200; }
+        .spinner { width: 50px; height: 50px; border: 4px solid rgba(251,192,45,0.1); border-top: 4px solid var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
 
-        #snackbar { position: fixed; top: -100px; left: 50%; transform: translateX(-50%); background: #fff; color: #000; padding: 20px 40px; border-radius: 50px; font-weight: 800; transition: 0.5s; z-index: 1000; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
-        #snackbar.show { top: 30px; }
+        #snackbar { position: fixed; top: -100px; left: 50%; transform: translateX(-50%); background: #fff; color: #000; padding: 12px 25px; border-radius: 30px; font-weight: 700; transition: 0.4s; z-index: 1000; font-size: 0.85rem; width: auto; white-space: nowrap; }
+        #snackbar.show { top: 25px; }
 
-        footer { position: absolute; bottom: 0; width: 100%; padding: 20px 25px calc(25px + env(safe-area-inset-bottom)); z-index: 110; background: linear-gradient(to top, var(--bg), transparent); }
+        footer { 
+            position: absolute; bottom: 0; width: 100%; padding: 15px 20px calc(15px + env(safe-area-inset-bottom)); 
+            z-index: 140; background: linear-gradient(to top, var(--bg) 60%, transparent);
+        }
+
+        @media (max-width: 480px) {
+            .logo-main { font-size: 3rem; }
+            .btn { padding: 14px; font-size: 0.8rem; }
+            footer .btn { height: 75px !important; border-radius: 22px; font-size: 1rem; }
+        }
     </style>
 </head>
 <body>
 
     <div id="snackbar"></div>
 
-    <!-- AUTH SCREEN -->
     <div id="auth-screen" class="screen-container">
         <div class="auth-card" id="login-form">
             <h1 class="logo-main">WAZE</h1>
-            <p style="color:#777; margin-bottom: 40px; font-weight: 600;">L'Afrique connectée sans frontières 🌍</p>
+            <p style="color:#888; margin: 10px 0 35px; font-weight: 500; font-size: 0.9rem;">Connectez-vous à l'Afrique 🌍</p>
             <input type="email" id="login-email" placeholder="Email">
             <input type="password" id="login-pass" placeholder="Mot de passe">
             <button class="btn btn-primary" onclick="handleLogin()">SE CONNECTER</button>
-            <p onclick="document.getElementById('login-form').style.display='none'; document.getElementById('signup-form').style.display='block';" style="cursor:pointer; color:var(--primary); font-weight:800; margin-top:25px;">REJOINDRE LE RÉSEAU</p>
+            <p onclick="document.getElementById('login-form').style.display='none'; document.getElementById('signup-form').style.display='block';" style="cursor:pointer; color:var(--primary); font-weight:700; margin-top:20px; font-size:0.8rem;">CRÉER UN COMPTE</p>
         </div>
         
         <div class="auth-card" id="signup-form" style="display:none;">
-            <h2 style="margin:0 0 30px 0; font-weight:900; letter-spacing:-1px;">INSCRIPTION PANAFRICAINE</h2>
-            <input type="text" id="signup-name" placeholder="Votre Pseudo">
+            <h2 style="margin:0 0 25px 0; font-weight:900; font-size: 1.3rem;">NOUVEAU COMPTE</h2>
+            <input type="text" id="signup-name" placeholder="Pseudo">
             <select id="signup-country"></select>
             <input type="email" id="signup-email" placeholder="Email">
             <input type="password" id="signup-pass" placeholder="Mot de passe">
-            <button class="btn btn-primary" onclick="handleSignUp()">CRÉER MON COMPTE</button>
-            <p onclick="document.getElementById('signup-form').style.display='none'; document.getElementById('login-form').style.display='block';" style="cursor:pointer; color:var(--primary); font-weight:800;">DÉJÀ INSCRIT ?</p>
+            <button class="btn btn-primary" onclick="handleSignUp()">S'INSCRIRE</button>
+            <p onclick="document.getElementById('signup-form').style.display='none'; document.getElementById('login-form').style.display='block';" style="cursor:pointer; color:var(--primary); font-weight:700; font-size:0.8rem;">DÉJÀ INSCRIT ?</p>
         </div>
     </div>
 
-    <!-- SELECTION SCREEN -->
     <div id="selection-screen" class="screen-container">
-        <div class="auth-card" style="background:transparent; border:none; box-shadow:none;">
-            <h1 class="logo-main" style="margin-bottom:40px;">WAZE</h1>
-            <button class="btn btn-primary" onclick="startChatMode('video')" style="height:110px; font-size:1.3rem; border-radius:35px;">
-                Vidéo Instantanée 🎥
+        <div style="width:100%; max-width:400px; text-align:center;">
+            <h1 class="logo-main" style="margin-bottom:50px;">WAZE</h1>
+            <button class="btn btn-primary" onclick="startChatMode('video')" style="height:80px; border-radius:25px; font-size:1rem;">
+                <span style="font-size:1.3rem;">🎥</span> Vidéo Instantanée
             </button>
-            <button class="btn btn-outline" onclick="startChatMode('text')" style="height:110px; font-size:1.3rem; border-radius:35px;">
-                Discussion Texte 💬
+            <button class="btn btn-outline" onclick="startChatMode('text')" style="height:80px; border-radius:25px; font-size:1rem; margin-top:10px;">
+                <span style="font-size:1.3rem;">💬</span> Salon de Discussion
             </button>
-            <button class="btn" onclick="realLogout()" style="color:#ef4444; margin-top:30px; background:none; font-weight:800;">DÉCONNEXION</button>
+            <button class="btn" onclick="realLogout()" style="color:#ff5252; margin-top:40px; background:none; font-weight:700; font-size:0.75rem;">DÉCONNEXION</button>
         </div>
     </div>
 
-    <!-- APP SCREEN -->
     <div id="main-app" class="screen-container" style="padding:0;">
         <header>
-            <div style="font-weight:900; font-size:1.7rem; letter-spacing:-1.5px;">WAZE <span style="color:var(--primary);">AFRICA</span></div>
-            <button onclick="goToMenu()" class="btn-outline" style="padding:12px 25px; width:auto; font-weight:800; border-radius:18px; font-size:0.9rem;">QUITTER</button>
+            <div style="font-weight:900; font-size:1.3rem; letter-spacing:-1px;">WAZE <span style="color:var(--primary);">AFRICA</span></div>
+            <button onclick="goToMenu()" class="btn-outline" style="padding:8px 18px; width:auto; font-weight:700; border-radius:12px; font-size:0.7rem;">QUITTER</button>
         </header>
 
         <div class="app-body">
             <div id="matching-overlay">
                 <div class="spinner"></div>
-                <p style="color:var(--primary); font-weight:900; margin-top:30px; letter-spacing:3px;">RECHERCHE EN AFRIQUE...</p>
+                <p style="color:var(--primary); font-weight:800; margin-top:20px; font-size:0.75rem; letter-spacing:2px;">MATCHING...</p>
             </div>
 
-            <!-- VIDÉO LAYOUT -->
             <div id="video-layout">
                 <div class="partner-chip">
-                    <span id="partner-info-text" style="font-weight:900; font-size:1.2rem;">En attente d'un africain...</span>
+                    <span id="partner-info-text" style="font-weight:800;">Recherche...</span>
                 </div>
                 <video id="remoteVideo" class="remote-v" autoplay playsinline></video>
                 <video id="localVideo" class="local-v" autoplay muted playsinline></video>
                 <div id="video-controls">
                     <button class="ctrl-btn" id="mute-btn" onclick="toggleMute()">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
                     </button>
                 </div>
             </div>
 
-            <!-- CHAT AREA -->
             <div id="chat-area">
                 <div id="chat-messages"></div>
-                <div style="display:flex; gap:12px; align-items:center; margin-top:20px;">
-                    <input type="text" id="chat-input" placeholder="Écrire un message..." style="margin-bottom:0; border-radius:28px; background:#1e1e26; border:none;">
-                    <button class="btn btn-primary" style="width:65px; height:65px; margin-bottom:0; border-radius:50%;" onclick="sendMessage()">➤</button>
+                <div id="typing-indicator"></div>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <input type="text" id="chat-input" oninput="handleTyping()" placeholder="Message..." style="margin-bottom:0; border-radius:25px; background:#1e1e26; border:none; padding: 14px 20px;">
+                    <button class="btn btn-primary" style="width:48px; height:48px; margin-bottom:0; border-radius:50%; flex-shrink:0;" onclick="sendMessage()">➤</button>
                 </div>
             </div>
         </div>
 
         <footer>
-            <button class="btn btn-primary" onclick="nextMapane()" style="height:90px; font-size:1.4rem; border-radius:32px;">
+            <button class="btn btn-primary" onclick="nextMapane()" style="height:70px; font-size:1.1rem; border-radius:25px;">
                 PARTENAIRE SUIVANT 🔄
             </button>
         </footer>
