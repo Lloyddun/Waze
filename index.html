@@ -25,7 +25,17 @@
         const auth = firebase.auth();
         const db = firebase.firestore();
 
+        // WebRTC Config
+        const servers = {
+            iceServers: [
+                { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
+            ],
+            iceCandidatePoolSize: 10,
+        };
+
+        let pc = new RTCPeerConnection(servers);
         let localStream = null;
+        let remoteStream = null;
         let currentMode = 'video'; 
         let currentPartnerId = null;
         let isMuted = false;
@@ -89,7 +99,7 @@
             if(mode === 'video') {
                 document.getElementById('video-layout').style.display = 'block';
                 document.getElementById('chat-area').style.display = 'none';
-                initCamera();
+                await initCamera();
             } else {
                 document.getElementById('video-layout').style.display = 'none';
                 document.getElementById('chat-area').style.display = 'flex';
@@ -105,12 +115,10 @@
                 const data = doc.data();
                 if(!data) return;
 
-                // Cas du Swap
                 if(currentPartnerId && !data.partnerId) {
                     showStatusMessage("L'utilisateur vous a swappé 🔄");
                     resetPartnerUI();
                 }
-                // Cas de connexion
                 if(!currentPartnerId && data.partnerId) {
                     connectToPartner(data.partnerId);
                 }
@@ -131,20 +139,77 @@
                 startChatListener();
             } else {
                 document.getElementById('remoteVideo').style.opacity = "1";
+                setupVideoCall(pId);
+            }
+        }
+
+        // --- LOGIQUE VIDÉO WEBRTC ---
+        async function setupVideoCall(partnerId) {
+            const callId = [auth.currentUser.uid, partnerId].sort().join('_');
+            const callDoc = db.collection('calls').doc(callId);
+            const offerCandidates = callDoc.collection('offerCandidates');
+            const answerCandidates = callDoc.collection('answerCandidates');
+
+            pc.onicecandidate = (event) => {
+                event.candidate && (auth.currentUser.uid < partnerId ? offerCandidates : answerCandidates).add(event.candidate.toJSON());
+            };
+
+            const remoteStream = new MediaStream();
+            pc.ontrack = (event) => {
+                event.streams[0].getTracks().forEach((track) => remoteStream.addTrack(track));
+            };
+            document.getElementById('remoteVideo').srcObject = remoteStream;
+
+            localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+            const callData = (await callDoc.get()).data();
+
+            if (auth.currentUser.uid < partnerId) {
+                // Je suis l'offrant
+                const offerDescription = await pc.createOffer();
+                await pc.setLocalDescription(offerDescription);
+                await callDoc.set({ offer: { sdp: offerDescription.sdp, type: offerDescription.type } });
+
+                callDoc.onSnapshot((snapshot) => {
+                    const data = snapshot.data();
+                    if (!pc.currentRemoteDescription && data?.answer) {
+                        pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    }
+                });
+
+                answerCandidates.onSnapshot((snapshot) => {
+                    snapshot.docChanges().forEach((change) => {
+                        if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                    });
+                });
+            } else {
+                // Je suis le répondant
+                callDoc.onSnapshot(async (snapshot) => {
+                    const data = snapshot.data();
+                    if (!pc.currentRemoteDescription && data?.offer) {
+                        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+                        const answerDescription = await pc.createAnswer();
+                        await pc.setLocalDescription(answerDescription);
+                        await callDoc.update({ answer: { sdp: answerDescription.sdp, type: answerDescription.type } });
+                    }
+                });
+
+                offerCandidates.onSnapshot((snapshot) => {
+                    snapshot.docChanges().forEach((change) => {
+                        if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                    });
+                });
             }
         }
 
         function startChatListener() {
             if(chatObserver) chatObserver();
-            
-            // On crée un ID de salon unique basé sur les deux UIDs triés
             const chatId = [auth.currentUser.uid, currentPartnerId].sort().join('_');
-            
             chatObserver = db.collection("chats").doc(chatId).collection("messages")
                 .orderBy("timestamp", "asc")
                 .onSnapshot(snapshot => {
                     const box = document.getElementById('chat-messages');
-                    box.innerHTML = ""; // Refresh complet pour simplicité
+                    box.innerHTML = "";
                     snapshot.forEach(doc => {
                         const m = doc.data();
                         const isMine = m.senderId === auth.currentUser.uid;
@@ -155,11 +220,16 @@
 
         function resetPartnerUI() {
             if(chatObserver) chatObserver();
+            if(pc) {
+                pc.close();
+                pc = new RTCPeerConnection(servers);
+            }
             currentPartnerId = null;
             document.getElementById('current-partner-name').innerText = "En attente...";
             document.getElementById('current-partner-loc').innerText = "GABON";
             document.getElementById('chat-messages').innerHTML = "";
             document.getElementById('remoteVideo').style.opacity = "0.3";
+            document.getElementById('remoteVideo').srcObject = null;
         }
 
         // --- MATCHING ---
@@ -170,6 +240,8 @@
             const myId = auth.currentUser.uid;
             if(currentPartnerId) {
                 await db.collection("users").doc(currentPartnerId).update({ partnerId: null, isOccupied: false });
+                const callId = [myId, currentPartnerId].sort().join('_');
+                await db.collection('calls').doc(callId).delete();
             }
             await db.collection("users").doc(myId).update({ partnerId: null, isOccupied: false });
             resetPartnerUI();
@@ -179,7 +251,7 @@
                     .where("isOnline", "==", true)
                     .where("isOccupied", "==", false)
                     .where("currentMode", "==", currentMode)
-                    .limit(15)
+                    .limit(10)
                     .get();
 
                 let potential = [];
@@ -193,13 +265,13 @@
                 } else {
                     setTimeout(() => {
                         overlay.style.display = 'none';
-                        showStatusMessage("Aucun Gabonais libre en mode " + currentMode);
+                        showStatusMessage("Personne n'est libre... Réessaye.");
                     }, 1200);
                 }
             } catch (e) { overlay.style.display = 'none'; }
         };
 
-        // --- MESSAGERIE INSTANTANÉE ---
+        // --- MESSAGERIE ---
         window.sendMessage = async function() {
             const input = document.getElementById('chat-input');
             const text = input.value.trim();
@@ -211,8 +283,6 @@
                     senderId: auth.currentUser.uid,
                     timestamp: firebase.firestore.FieldValue.serverTimestamp()
                 });
-            } else if(!currentPartnerId) {
-                showStatusMessage("Trouve quelqu'un d'abord !");
             }
         };
 
@@ -230,7 +300,7 @@
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 document.getElementById('localVideo').srcObject = localStream;
-            } catch (e) { showStatusMessage("Caméra non disponible"); }
+            } catch (e) { showStatusMessage("Erreur Caméra"); }
         }
 
         function stopCamera() {
@@ -245,7 +315,6 @@
                 isMuted = !isMuted;
                 localStream.getAudioTracks()[0].enabled = !isMuted;
                 document.getElementById('mute-btn').style.color = isMuted ? "#ff4444" : "#fff";
-                showStatusMessage(isMuted ? "Micro coupé" : "Micro actif");
             }
         };
 
@@ -277,13 +346,6 @@
             if (user) showView('selection-screen');
             else showView('auth-screen');
         });
-
-        // Détection de fermeture d'onglet
-        window.onbeforeunload = function() {
-            if(auth.currentUser) {
-                db.collection("users").doc(auth.currentUser.uid).update({ isOnline: false, isOccupied: false, partnerId: null });
-            }
-        };
     </script>
 
     <style>
@@ -334,7 +396,7 @@
         .app-body { flex: 1; width: 100%; position: relative; overflow: hidden; }
 
         #video-layout { position: absolute; inset: 0; background: #000; }
-        .remote-v { width: 100%; height: 100%; object-fit: cover; opacity: 0.3; transition: 0.5s; }
+        .remote-v { width: 100%; height: 100%; object-fit: cover; opacity: 0.3; transition: 0.5s; background: #000; }
         .local-v { 
             position: absolute; bottom: 100px; right: 20px; 
             width: 130px; height: 180px; border-radius: 24px; 
