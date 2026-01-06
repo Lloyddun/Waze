@@ -28,6 +28,7 @@
         let remoteStream = null;
         let currentMode = 'video'; 
         let currentPartnerId = null;
+        let currentSessionId = null; // Nouvel identifiant unique par appel
         let isMuted = false;
         let statusObserver = null;
         let chatObserver = null;
@@ -36,10 +37,10 @@
         let offerCandidatesUnsubscribe = null;
         let answerCandidatesUnsubscribe = null;
 
-        // Configuration WebRTC
+        // Configuration WebRTC (STUN serveurs robustes)
         const servers = {
             iceServers: [
-                { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302', 'stun:stun.l.google.com:19302'] }
+                { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302', 'stun:stun3.l.google.com:19302', 'stun:stun4.l.google.com:19302'] }
             ],
             iceCandidatePoolSize: 10,
         };
@@ -57,7 +58,12 @@
                 auth.onAuthStateChanged(user => {
                     if (user) {
                         showView('selection-screen');
-                        db.collection("users").doc(user.uid).update({ isOnline: true, isOccupied: false });
+                        db.collection("users").doc(user.uid).update({ 
+                            isOnline: true, 
+                            isOccupied: false,
+                            partnerId: null,
+                            currentSessionId: null
+                        });
                     } else {
                         showView('auth-screen');
                     }
@@ -85,7 +91,7 @@
                 const uc = await auth.createUserWithEmailAndPassword(email, pass);
                 await db.collection("users").doc(uc.user.uid).set({
                     uid: uc.user.uid, name, country, isOnline: true, currentMode: 'none',
-                    isOccupied: false, partnerId: null, isTyping: false,
+                    isOccupied: false, partnerId: null, isTyping: false, currentSessionId: null,
                     lastSeen: firebase.firestore.FieldValue.serverTimestamp()
                 });
             } catch (e) { showStatusMessage(e.message); }
@@ -108,7 +114,7 @@
             currentMode = mode;
             showView('main-app');
             await db.collection("users").doc(auth.currentUser.uid).update({
-                currentMode: mode, isOccupied: false, isOnline: true, partnerId: null
+                currentMode: mode, isOccupied: false, isOnline: true, partnerId: null, currentSessionId: null
             });
             if(mode === 'video') {
                 document.getElementById('video-layout').style.display = 'block';
@@ -127,11 +133,16 @@
             statusObserver = db.collection("users").doc(auth.currentUser.uid).onSnapshot(doc => {
                 const data = doc.data();
                 if(!data) return;
+
+                // Cas 1 : On vient d'être déconnecté par l'autre
                 if(currentPartnerId && !data.partnerId) {
                     showStatusMessage("Partenaire déconnecté 🔄");
                     resetPartnerUI();
                 }
-                if(!currentPartnerId && data.partnerId) {
+                
+                // Cas 2 : On a trouvé un partenaire (soit on a matché, soit on a été matché)
+                if(!currentPartnerId && data.partnerId && data.currentSessionId) {
+                    currentSessionId = data.currentSessionId;
                     connectToPartner(data.partnerId);
                 }
             });
@@ -151,13 +162,14 @@
                 startChatListener();
                 startTypingListener(pId);
             } else {
-                // Délai pour laisser Firestore propager les états
-                setTimeout(() => setupWebRTC(), 1500);
+                // On attend un petit peu que Firestore soit stable
+                setTimeout(() => setupWebRTC(), 800);
             }
         }
 
-        // --- WEBRTC CORE (CORRIGÉ POUR RÉUTILISATION INFINIE) ---
+        // --- WEBRTC CORE (STABILISÉ) ---
         async function setupWebRTC() {
+            // Nettoyage complet avant de commencer
             if(pc) { pc.close(); pc = null; }
             if(offerCandidatesUnsubscribe) offerCandidatesUnsubscribe();
             if(answerCandidatesUnsubscribe) answerCandidatesUnsubscribe();
@@ -168,30 +180,39 @@
             const remoteVid = document.getElementById('remoteVideo');
             
             pc.ontrack = (event) => {
-                event.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
+                event.streams[0].getTracks().forEach(t => {
+                    remoteStream.addTrack(t);
+                });
                 remoteVid.srcObject = remoteStream;
-                remoteVid.style.opacity = "1";
+                remoteVid.onloadedmetadata = () => {
+                    remoteVid.style.opacity = "1";
+                };
             };
 
             if(localStream) {
                 localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
             }
 
-            const callId = [auth.currentUser.uid, currentPartnerId].sort().join('_');
-            const callDoc = db.collection('calls').doc(callId);
+            // L'ID de l'appel est maintenant le sessionId unique partagé
+            const callDoc = db.collection('calls').doc(currentSessionId);
             
             pc.onicecandidate = (event) => {
-                if (event.candidate) {
+                if (event.candidate && currentSessionId) {
                     const col = auth.currentUser.uid < currentPartnerId ? 'offerCandidates' : 'answerCandidates';
                     callDoc.collection(col).add(event.candidate.toJSON());
                 }
             };
 
+            // Logique Offreur / Répondeur basée sur l'UID alphabétique
             if (auth.currentUser.uid < currentPartnerId) {
                 // OFFREUR
                 const offerDescription = await pc.createOffer();
                 await pc.setLocalDescription(offerDescription);
-                await callDoc.set({ offer: { sdp: offerDescription.sdp, type: offerDescription.type }, answer: null });
+                await callDoc.set({ 
+                    offer: { sdp: offerDescription.sdp, type: offerDescription.type }, 
+                    answer: null,
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                });
 
                 callUnsubscribe = callDoc.onSnapshot(snap => {
                     const data = snap.data();
@@ -202,7 +223,7 @@
 
                 answerCandidatesUnsubscribe = callDoc.collection('answerCandidates').onSnapshot(s => {
                     s.docChanges().forEach(change => {
-                        if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                        if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data())).catch(()=>{});
                     });
                 });
             } else {
@@ -219,7 +240,7 @@
 
                 offerCandidatesUnsubscribe = callDoc.collection('offerCandidates').onSnapshot(s => {
                     s.docChanges().forEach(change => {
-                        if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                        if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data())).catch(()=>{});
                     });
                 });
             }
@@ -231,50 +252,47 @@
             overlay.style.display = 'flex';
             const myId = auth.currentUser.uid;
             
-            // 1. Quitter la session actuelle proprement
+            // 1. Déconnexion propre du partenaire actuel
             if(currentPartnerId) {
                 const pId = currentPartnerId;
-                const callId = [myId, pId].sort().join('_');
-                
-                // Nettoyage Firestore de la session précédente
-                const callRef = db.collection('calls').doc(callId);
-                // On supprime les candidats pour la prochaine fois
-                const offCands = await callRef.collection('offerCandidates').get();
-                offCands.forEach(d => d.ref.delete());
-                const ansCands = await callRef.collection('answerCandidates').get();
-                ansCands.forEach(d => d.ref.delete());
-                await callRef.delete().catch(()=>{});
-
-                await db.collection("users").doc(pId).update({ partnerId: null, isOccupied: false }).catch(()=>{});
+                await db.collection("users").doc(pId).update({ partnerId: null, isOccupied: false, currentSessionId: null }).catch(()=>{});
             }
 
-            await db.collection("users").doc(myId).update({ partnerId: null, isOccupied: false, isTyping: false });
+            await db.collection("users").doc(myId).update({ partnerId: null, isOccupied: false, isTyping: false, currentSessionId: null });
             resetPartnerUI();
 
-            // 2. Chercher un nouveau partenaire
+            // 2. Recherche
             try {
                 const snapshot = await db.collection("users")
                     .where("isOnline", "==", true)
                     .where("isOccupied", "==", false)
                     .where("currentMode", "==", currentMode)
-                    .limit(20).get();
+                    .limit(10).get();
 
                 let potential = [];
                 snapshot.forEach(doc => { if(doc.id !== myId) potential.push(doc.data()); });
 
                 if(potential.length > 0) {
                     const partner = potential[Math.floor(Math.random() * potential.length)];
-                    // Verrouillage mutuel
-                    await db.collection("users").doc(myId).update({ partnerId: partner.uid, isOccupied: true });
-                    await db.collection("users").doc(partner.uid).update({ partnerId: myId, isOccupied: true });
-                    setTimeout(() => { overlay.style.display = 'none'; }, 1000);
+                    const newSessionId = "session_" + Math.random().toString(36).substr(2, 9);
+                    
+                    // On définit le même SessionID pour les deux
+                    const batch = db.batch();
+                    batch.update(db.collection("users").doc(myId), { partnerId: partner.uid, isOccupied: true, currentSessionId: newSessionId });
+                    batch.update(db.collection("users").doc(partner.uid), { partnerId: myId, isOccupied: true, currentSessionId: newSessionId });
+                    await batch.commit();
+                    
+                    setTimeout(() => { overlay.style.display = 'none'; }, 500);
                 } else {
                     setTimeout(() => {
                         overlay.style.display = 'none';
-                        showStatusMessage("Personne en ligne... Réessaie !");
-                    }, 2500);
+                        showStatusMessage("Personne n'est libre... Réessaie !");
+                    }, 2000);
                 }
-            } catch (e) { overlay.style.display = 'none'; }
+            } catch (e) { 
+                console.error(e);
+                overlay.style.display = 'none'; 
+            }
         };
 
         function resetPartnerUI() {
@@ -284,6 +302,7 @@
             if(answerCandidatesUnsubscribe) answerCandidatesUnsubscribe();
             
             currentPartnerId = null;
+            currentSessionId = null;
             document.getElementById('partner-info-text').innerText = "Recherche...";
             document.getElementById('chat-messages').innerHTML = "";
             document.getElementById('remoteVideo').style.opacity = "0.1";
@@ -291,14 +310,13 @@
             if(pc) { pc.close(); pc = null; }
         }
 
-        // --- CHAT ET CAMERA ---
+        // --- CHAT ET MEDIA ---
         window.sendMessage = async function() {
             const input = document.getElementById('chat-input');
             const text = input.value.trim();
-            if(text && currentPartnerId) {
-                const chatId = [auth.currentUser.uid, currentPartnerId].sort().join('_');
+            if(text && currentPartnerId && currentSessionId) {
                 input.value = "";
-                await db.collection("chats").doc(chatId).collection("messages").add({
+                await db.collection("calls").doc(currentSessionId).collection("messages").add({
                     text: text, senderId: auth.currentUser.uid,
                     timestamp: firebase.firestore.FieldValue.serverTimestamp()
                 });
@@ -307,8 +325,7 @@
 
         function startChatListener() {
             if(chatObserver) chatObserver();
-            const chatId = [auth.currentUser.uid, currentPartnerId].sort().join('_');
-            chatObserver = db.collection("chats").doc(chatId).collection("messages")
+            chatObserver = db.collection("calls").doc(currentSessionId).collection("messages")
                 .orderBy("timestamp", "asc").onSnapshot(snap => {
                     const box = document.getElementById('chat-messages');
                     box.innerHTML = "";
@@ -346,13 +363,19 @@
 
         async function initCamera() {
             try {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }, 
+                    audio: true 
+                });
                 document.getElementById('localVideo').srcObject = localStream;
-            } catch (e) { showStatusMessage("Caméra non détectée"); }
+            } catch (e) { 
+                showStatusMessage("Accès caméra refusé ou non trouvée"); 
+            }
         }
 
         function stopCamera() {
             if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+            document.getElementById('localVideo').srcObject = null;
         }
 
         window.toggleMute = function() {
@@ -366,9 +389,13 @@
         window.goToMenu = async function() {
             stopCamera();
             if(auth.currentUser) {
-                await db.collection("users").doc(auth.currentUser.uid).update({ isOccupied: false, currentMode: 'none', partnerId: null });
+                if(currentPartnerId) {
+                    await db.collection("users").doc(currentPartnerId).update({ partnerId: null, isOccupied: false, currentSessionId: null }).catch(()=>{});
+                }
+                await db.collection("users").doc(auth.currentUser.uid).update({ isOccupied: false, currentMode: 'none', partnerId: null, currentSessionId: null });
             }
             showView('selection-screen');
+            resetPartnerUI();
         };
 
         window.realLogout = async function() {
@@ -388,37 +415,56 @@
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; font-family: 'Outfit', sans-serif; }
         body, html { margin: 0; background: var(--bg); color: var(--text); height: 100vh; width: 100vw; overflow: hidden; }
         .screen-container { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
-        .auth-card { background: var(--card); padding: 40px 30px; border-radius: 35px; width: 100%; max-width: 400px; text-align: center; border: 1px solid var(--border); }
+        
+        /* Auth */
+        .auth-card { background: var(--card); padding: 40px 30px; border-radius: 35px; width: 100%; max-width: 400px; text-align: center; border: 1px solid var(--border); box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
         .logo-main { font-size: 3.5rem; font-weight: 900; color: var(--primary); margin: 0; letter-spacing: -3px; }
-        .btn { width: 100%; padding: 18px; border-radius: 20px; border: none; font-weight: 800; cursor: pointer; margin-bottom: 12px; text-transform: uppercase; font-size: 0.9rem; }
+        
+        /* Buttons */
+        .btn { width: 100%; padding: 18px; border-radius: 20px; border: none; font-weight: 800; cursor: pointer; margin-bottom: 12px; text-transform: uppercase; font-size: 0.9rem; transition: 0.2s; }
+        .btn:active { transform: scale(0.96); }
         .btn-primary { background: var(--primary); color: #000; box-shadow: 0 10px 25px rgba(251, 192, 45, 0.4); }
         .btn-outline { background: rgba(255,255,255,0.04); color: #fff; border: 1px solid var(--border); }
-        input, select { width: 100%; background: #202028; border: 1px solid var(--border); padding: 16px; border-radius: 16px; color: #fff; margin-bottom: 14px; }
+        
+        /* Inputs */
+        input, select { width: 100%; background: #202028; border: 1px solid var(--border); padding: 16px; border-radius: 16px; color: #fff; margin-bottom: 14px; outline: none; }
+        
+        /* Layout */
         header { width: 100%; padding: 20px 25px; display: flex; justify-content: space-between; align-items: center; z-index: 110; position: absolute; top:0; background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent); }
-        .app-body { flex: 1; width: 100%; position: relative; display: flex; flex-direction: column; }
+        .app-body { flex: 1; width: 100%; position: relative; display: flex; flex-direction: column; height: 100%; }
+        
+        /* Video */
         #video-layout { position: absolute; inset: 0; background: #000; display: none; }
-        .remote-v { width: 100%; height: 100%; object-fit: cover; opacity: 0.1; transition: 0.5s; }
-        .local-v { position: absolute; top: 100px; right: 20px; width: 110px; height: 160px; border-radius: 22px; border: 2px solid var(--primary); object-fit: cover; z-index: 120; background: #111; }
+        .remote-v { width: 100%; height: 100%; object-fit: cover; opacity: 0.1; transition: 0.5s; background: #0a0a0a; }
+        .local-v { position: absolute; top: 100px; right: 20px; width: 110px; height: 160px; border-radius: 22px; border: 2px solid var(--primary); object-fit: cover; z-index: 120; background: #111; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
         .partner-chip { position: absolute; top: 90px; left: 20px; background: rgba(0,0,0,0.6); backdrop-filter: blur(20px); padding: 12px 20px; border-radius: 20px; z-index: 115; border: 1px solid rgba(255,255,255,0.15); }
         #video-controls { position: absolute; bottom: 130px; left: 20px; display: flex; flex-direction: column; gap: 12px; z-index: 130; }
-        .ctrl-btn { width: 50px; height: 50px; border-radius: 18px; background: rgba(0,0,0,0.5); color: white; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; }
-        #chat-area { display: none; flex-direction: column; height: 100%; padding: 100px 20px 130px; }
-        #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
-        .message-bubble { padding: 16px 22px; border-radius: 24px; max-width: 85%; }
+        .ctrl-btn { width: 50px; height: 50px; border-radius: 18px; background: rgba(0,0,0,0.5); color: white; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
+        
+        /* Chat */
+        #chat-area { display: none; flex-direction: column; height: 100%; padding: 100px 20px 130px; background: var(--bg); }
+        #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 10px; }
+        .message-bubble { padding: 16px 22px; border-radius: 24px; max-width: 85%; position: relative; line-height: 1.4; }
         .message-bubble.mine { background: var(--primary); color: #000; align-self: flex-end; border-bottom-right-radius: 4px; font-weight: 600; }
         .message-bubble.other { background: var(--accent); align-self: flex-start; border-bottom-left-radius: 4px; border: 1px solid var(--border); }
         .sender { font-size: 0.7rem; font-weight: 800; opacity: 0.6; text-transform: uppercase; margin-bottom: 5px; display: block; }
-        #typing-indicator { font-size: 0.8rem; color: var(--primary); margin-bottom: 10px; opacity: 0; height: 18px; }
+        #typing-indicator { font-size: 0.8rem; color: var(--primary); margin-bottom: 10px; opacity: 0; height: 18px; transition: 0.3s; }
+        
+        /* Overlays */
         #matching-overlay { position: absolute; inset: 0; background: rgba(10,10,14,0.98); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 200; }
         .spinner { width: 60px; height: 60px; border: 5px solid rgba(251,192,45,0.1); border-top: 5px solid var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
-        #snackbar { position: fixed; top: -100px; left: 50%; transform: translateX(-50%); background: #fff; color: #000; padding: 14px 30px; border-radius: 35px; font-weight: 800; transition: 0.5s; z-index: 1000; }
+        
+        /* Utils */
+        #snackbar { position: fixed; top: -100px; left: 50%; transform: translateX(-50%); background: #fff; color: #000; padding: 14px 30px; border-radius: 35px; font-weight: 800; transition: 0.5s; z-index: 1000; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
         #snackbar.show { top: 30px; }
-        footer { position: absolute; bottom: 0; width: 100%; padding: 20px 20px calc(20px + env(safe-area-inset-bottom)); z-index: 140; background: linear-gradient(to top, var(--bg) 80%, transparent); }
+        footer { position: absolute; bottom: 0; width: 100%; padding: 20px 20px calc(25px + env(safe-area-inset-bottom)); z-index: 140; background: linear-gradient(to top, var(--bg) 85%, transparent); }
     </style>
 </head>
 <body>
     <div id="snackbar"></div>
+    
+    <!-- Écran d'Authentification -->
     <div id="auth-screen" class="screen-container">
         <div class="auth-card" id="login-form">
             <h1 class="logo-main">WAZE</h1>
@@ -429,8 +475,8 @@
             <p onclick="document.getElementById('login-form').style.display='none'; document.getElementById('signup-form').style.display='block';" style="cursor:pointer; color:var(--primary); font-weight:700; margin-top:25px;">CRÉER UN COMPTE</p>
         </div>
         <div class="auth-card" id="signup-form" style="display:none;">
-            <h2 style="margin-bottom:25px;">NOUVEAU COMPTE</h2>
-            <input type="text" id="signup-name" placeholder="Pseudo">
+            <h2 style="margin-bottom:25px;">REJOINDRE WAZE</h2>
+            <input type="text" id="signup-name" placeholder="Ton Pseudo">
             <select id="signup-country"></select>
             <input type="email" id="signup-email" placeholder="Email">
             <input type="password" id="signup-pass" placeholder="Mot de passe">
@@ -439,41 +485,53 @@
         </div>
     </div>
 
+    <!-- Écran de Sélection -->
     <div id="selection-screen" class="screen-container">
         <div style="width:100%; max-width:400px; text-align:center;">
             <h1 class="logo-main" style="margin-bottom:60px;">WAZE</h1>
-            <button class="btn btn-primary" onclick="startChatMode('video')" style="height:90px; border-radius:28px;">🎥 Vidéo en Direct</button>
-            <button class="btn btn-outline" onclick="startChatMode('text')" style="height:90px; border-radius:28px; margin-top:15px;">💬 Salon de Chat</button>
+            <button class="btn btn-primary" onclick="startChatMode('video')" style="height:90px; border-radius:28px; font-size:1.1rem;">🎥 Vidéo en Direct</button>
+            <button class="btn btn-outline" onclick="startChatMode('text')" style="height:90px; border-radius:28px; margin-top:15px; font-size:1.1rem;">💬 Salon de Chat</button>
             <button class="btn" onclick="realLogout()" style="color:#ff5252; margin-top:50px; background:none; font-weight:700;">DÉCONNEXION</button>
         </div>
     </div>
 
+    <!-- Interface Principale -->
     <div id="main-app" class="screen-container" style="padding:0;">
         <header>
             <div style="font-weight:900; font-size:1.4rem;">WAZE <span style="color:var(--primary);">AFRICA</span></div>
-            <button onclick="goToMenu()" class="btn-outline" style="padding:10px 20px; width:auto; border-radius:15px; font-size:0.75rem;">QUITTER</button>
+            <button onclick="goToMenu()" class="btn-outline" style="padding:10px 18px; width:auto; border-radius:15px; font-size:0.75rem;">MENU</button>
         </header>
+
         <div class="app-body">
-            <div id="matching-overlay"><div class="spinner"></div><p style="color:var(--primary); margin-top:20px; letter-spacing:2px;">RECHERCHE...</p></div>
+            <!-- Overlay de recherche -->
+            <div id="matching-overlay">
+                <div class="spinner"></div>
+                <p style="color:var(--primary); margin-top:20px; letter-spacing:2px; font-weight:bold;">RECHERCHE EN COURS...</p>
+            </div>
+
+            <!-- Layout Vidéo -->
             <div id="video-layout">
-                <div class="partner-chip"><span id="partner-info-text" style="font-weight:800;">En attente...</span></div>
+                <div class="partner-chip"><span id="partner-info-text" style="font-weight:800;">Recherche d'un partenaire...</span></div>
                 <video id="remoteVideo" class="remote-v" autoplay playsinline></video>
                 <video id="localVideo" class="local-v" autoplay muted playsinline></video>
                 <div id="video-controls">
                     <button class="ctrl-btn" id="mute-btn" onclick="toggleMute()">🎙️</button>
                 </div>
             </div>
+
+            <!-- Layout Chat -->
             <div id="chat-area">
                 <div id="chat-messages"></div>
                 <div id="typing-indicator"></div>
                 <div style="display:flex; gap:12px;">
-                    <input type="text" id="chat-input" oninput="handleTyping()" placeholder="Message..." style="margin:0; border-radius:30px;">
-                    <button class="btn btn-primary" style="width:54px; height:54px; margin:0; border-radius:50%;" onclick="sendMessage()">➤</button>
+                    <input type="text" id="chat-input" oninput="handleTyping()" placeholder="Écris quelque chose..." style="margin:0; border-radius:30px;">
+                    <button class="btn btn-primary" style="width:54px; height:54px; margin:0; border-radius:50%; display:flex; align-items:center; justify-content:center; padding:0;" onclick="sendMessage()">➤</button>
                 </div>
             </div>
         </div>
+
         <footer>
-            <button class="btn btn-primary" onclick="nextMapane()" style="height:75px; border-radius:28px;">PROCHAIN MAPANE 🔄</button>
+            <button class="btn btn-primary" onclick="nextMapane()" style="height:75px; border-radius:28px; font-size:1rem;">PROCHAIN MAPANE 🔄</button>
         </footer>
     </div>
 </body>
