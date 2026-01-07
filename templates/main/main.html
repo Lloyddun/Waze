@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}{% if mode == 'video' %}Vidéo{% else %}Chat{% endif %} - WAZE AFRICA{% endblock %}
+
+{% block video_display %}{% if mode == 'video' %}block{% else %}none{% endif %}{% endblock %}
+{% block chat_display %}{% if mode == 'chat' %}flex{% else %}none{% endif %}{% endblock %}
+
+{% block body %}
+<script>
+const API_BASE_URL = "{{ url_for('api.health') }}";
+const SELECTION_URL = "{{ url_for('main.selection') }}";
+</script>
+<div id="main-app" class="screen-container" style="padding:0; display: flex;">
+    <header>
+        <div class="header-logo">WAZE <span style="color:var(--gold);">AFRICA</span></div>
+        <button onclick="goToMenu()" class="menu-btn">QUITTER</button>
+    </header>
+
+    <div id="video-layout">
+        <div class="partner-info"><span id="partner-info-text">Recherche...</span></div>
+        <video id="remoteVideo" class="remote-v" autoplay playsinline muted></video>
+        <video id="localVideo" class="local-v" autoplay muted playsinline></video>
+        
+        <div id="video-controls">
+            <button id="mute-btn" class="v-control-btn" onclick="toggleMute()">🎙️</button>
+            <button id="camera-btn" class="v-control-btn" onclick="toggleVideo()">👁️</button>
+        </div>
+    </div>
+
+    <div id="chat-area">
+        <div style="padding-bottom:15px; border-bottom:1px solid var(--border); margin-bottom:15px;">
+            <span style="color:#888; font-size: 0.8rem;">DISCUTION AVEC</span><br>
+            <span id="chat-partner-name" style="color:var(--gold); font-weight:900; font-size: 1.2rem;">...</span>
+            <div id="typing-indicator">... est en train d'écrire</div>
+        </div>
+        <div id="chat-messages"></div>
+        <div style="display:flex; flex-direction:column; gap:10px; padding-top:20px; background: var(--dark);">
+            <div style="display:flex; gap:10px; align-items: flex-end;">
+                <textarea id="chat-input" placeholder="Tape ton message ici..."></textarea>
+                <button class="btn-gold" style="width:65px; height: 50px; margin:0; display:flex; align-items:center; justify-content:center;" onclick="sendMessage()">➤</button>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <button id="next-btn" class="next-btn-small" onclick="nextMapane()">TROUVER UN AUTRE MAPANE 🔄</button>
+    </footer>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+{% if mode == 'video' %}
+<script src="{{ url_for('static', filename='js/video.js') }}"></script>
+{% else %}
+<script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+{% endif %}
+{% endblock %}

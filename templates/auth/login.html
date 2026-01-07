@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Connexion - WAZE AFRICA{% endblock %}
+
+{% block body %}
+<div id="auth-screen" class="screen-container" style="display: flex;">
+    <div class="glass-card" id="login-form">
+        <h1 class="logo">WAZE</h1>
+        <p style="color: #888; margin-bottom: 35px; font-weight: 600;">L'élite du Mapane Africain 🌍</p>
+        <input type="email" id="login-email" placeholder="Email" autocomplete="username">
+        <input type="password" id="login-pass" placeholder="Mot de passe" autocomplete="current-password">
+        <button class="btn-gold" onclick="handleLogin()">REJOINDRE L'ÉLITE</button>
+        <p onclick="window.location.href='{{ url_for('auth.signup') }}'" style="cursor:pointer; color:var(--gold); font-size: 0.9rem; margin-top:25px; font-weight: 700;">CRÉER UN COMPTE GRATUIT</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/auth.js') }}"></script>
+{% endblock %}
