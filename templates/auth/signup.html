@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}Inscription - WAZE AFRICA{% endblock %}
+
+{% block body %}
+<div id="auth-screen" class="screen-container" style="display: flex;">
+    <div class="glass-card" id="signup-form">
+        <h1 class="logo">WAZE</h1>
+        <p style="color: #888; margin-bottom: 35px; font-weight: 600;">Crée ton compte 🌍</p>
+        <input type="text" id="signup-name" placeholder="Ton Pseudo / Nom">
+        <select id="signup-country"></select>
+        <input type="email" id="signup-email" placeholder="Email valide">
+        <input type="password" id="signup-pass" placeholder="Mot de passe robuste">
+        <button class="btn-gold" onclick="handleSignUp()">S'INSCRIRE MAINTENANT</button>
+        <p onclick="window.location.href='{{ url_for('auth.login') }}'" style="cursor:pointer; color:var(--gold); font-size: 0.9rem; margin-top:25px; font-weight: 700;">DÉJÀ MEMBRE ? CONNECTE-TOI</p>
+    </div>
+</div>
+
+<script>
+    // Initialisation Firebase
+    if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+    }
+    window.auth = firebase.auth();
+    window.db = firebase.firestore();
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/auth.js') }}"></script>
+{% endblock %}

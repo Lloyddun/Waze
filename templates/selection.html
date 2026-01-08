@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Sélection - WAZE AFRICA{% endblock %}
+
+{% block body %}
+<script>
+const API_BASE_URL = "{{ url_for('api.health') }}";
+const VIDEO_URL = "{{ url_for('main.video') }}";
+const CHAT_URL = "{{ url_for('main.chat') }}";
+</script>
+<div id="selection-screen" class="screen-container" style="display: flex;">
+    <div class="glass-card">
+        <div id="online-count-badge" class="online-badge">... Mapanes Actifs</div>
+        <h1 class="logo">WAZE</h1>
+        <div style="height: 40px;"></div>
+        <button class="btn-gold" onclick="startChatMode('video')" style="margin-bottom: 15px;">📹 MODE VIDÉO DIRECT</button>
+        <button class="btn-gold" onclick="startChatMode('text')" style="background: rgba(255,255,255,0.08); color: #fff; border: 1px solid var(--border);">💬 MODE TEXTE PRIVÉ</button>
+        <div style="margin-top: 40px; font-size: 0.9rem;">
+            <p style="color:#888;">Utilisateurs en ligne: <span id="online-count" style="color:var(--gold); font-weight:900;">0</span></p>
+            <button onclick="realLogout()" style="background:none; border:none; color: #ff5252; font-weight: 800; cursor: pointer; margin-top:10px;">SE DÉCONNECTER</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+{% endblock %}
